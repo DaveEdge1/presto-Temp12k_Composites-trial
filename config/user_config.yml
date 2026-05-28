@@ -1,29 +1,42 @@
-# PReSto reconstruction config — user-overwritable knobs.
+# Temperature 12k Composites -- user configuration.
 #
-# This file is OVERWRITTEN by the PReSto server on each reconstruction
-# submission with the user's chosen parameters. The version committed
-# here is the DEFAULT used by manual / local runs and CI smoke tests.
+# Overwritten by the PReSto server on submission with the user's chosen
+# parameters; the values here are the defaults for manual / CI runs.
 #
-# CUSTOMIZATION:
-#   - Replace the demo knobs below with the parameters your algorithm
-#     actually needs. Keep the file schema flat-ish (one or two levels
-#     of nesting) so scripts/generate_readme.py can render it as a
-#     markdown table without special handling.
-#   - Document every knob with a short comment explaining valid ranges /
-#     options. PReSto's UI surfaces these comments to users.
+# By default ALL FIVE methods run and are pooled into the multi-method
+# consensus GMST (the paper's headline result). Toggle individual methods
+# off to reconstruct with a subset.
 
-# ── DEMO KNOBS ──────────────────────────────────────────────────────
-# Used only by scripts/reconstruct.py (the placeholder algorithm).
-# Replace when you swap in your real reconstruction code.
+# ---- which composite methods to run (paper: SCC, DCC, GAM, CPS, PaiCo) ----
+methods:
+  scc:   true     # Standard Calibrated Composite  (3-5 ka align, equal-area grid)
+  dcc:   true     # Dynamic Calibrated Composite    (iterative mean alignment)
+  gam:   true     # Generalized Additive Model      (per-grid-cell penalized spline)
+  cps:   true     # Composite Plus Scale            (z-score, scaled to PAGES2k 2k)
+  paico: true     # Pairwise Comparison             (rank-based, scaled to 2k)
 
-# Year window (inclusive) the reconstruction is computed over.
-# Years outside this range are dropped from the proxy matrix before
-# the per-year composite is calculated.
-reconstruction_window:
-  start: 1
-  end: 2000
+# ---- temporal binning (yr BP; 100-yr bins over the Holocene, paper) ----
+bin:
+  start_bp: -50     # youngest bin edge (~2000 CE)
+  end_bp:   12050   # oldest bin edge
+  step:     100     # bin width (years)
 
-# Minimum number of non-NaN proxies a year must have to be included
-# in the output. Lower values keep more years but with noisier means;
-# higher values are more conservative.
-min_proxies_per_year: 5
+# ---- ensemble size (per method). Paper used 500; 50 is a practical default. ----
+nens: 50
+
+# ---- parallel workers. CI runs each method as its own 2-core matrix job, so 2
+#      matches the runner; bump for a bigger machine (auto-detects if removed). ----
+ncores: 2
+
+# ---- pre-industrial reference period (CE) anomalies are relative to ----
+reference_period:
+  start: 1800
+  end:   1900
+
+# ---- advanced, per-method knobs (defaults match the paper where stated) ----
+advanced:
+  dcc_duration:     3000          # DCC standardization interval length (yr)
+  cps_duration:     3000          # CPS random standardization interval (<7 ka)
+  cps_scale_window: [0, 1000]     # CPS scaling window (yr BP; last millennium)
+  gam_spline_k:     25            # GAM penalized B-spline basis dimension
+  paico_reg_param:  1.0           # PaiCo regularization parameter

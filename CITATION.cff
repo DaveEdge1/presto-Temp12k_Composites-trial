@@ -2,20 +2,40 @@ cff-version: 1.2.0
 message: If you use this reconstruction, please cite the references below. Additionally,
   please cite the underlying paleoclimate data sources listed in data_references.bib
   (482 publications across 647 datasets) and the lipdverse compilation.
-title: PReSto reconstruction template
+title: Temperature 12k Composites (PReSto)
 type: software
 authors:
-- family-names: Your last name
-  given-names: Your first name
-url: https://github.com/DaveEdge1/presto-template
+- family-names: Edge
+  given-names: David
+url: https://github.com/DaveEdge1/presto-Temp12k_Composites
 references:
 - type: article
-  title: 'REPLACE: cite the paper that introduces your reconstruction method here'
+  title: 'Holocene global mean surface temperature, a multi-method reconstruction approach'
   authors:
-  - family-names: Author
-    given-names: First
-  year: 2026
-  notes: Method reference for the reconstruction wrapped by this template.
+  - family-names: Kaufman
+    given-names: Darrell
+  - family-names: McKay
+    given-names: Nicholas
+  - family-names: Routson
+    given-names: Cody
+  - family-names: Erb
+    given-names: Michael
+  - family-names: Davis
+    given-names: Basil
+  year: 2020
+  doi: 10.1038/s41597-020-0530-7
+  journal: Scientific Data
+  volume: 7
+  notes: Method reference (SCC, DCC, GAM, CPS, PaiCo) reconstructed by this container.
+- type: article
+  title: 'A global database of Holocene paleotemperature records'
+  authors:
+  - family-names: Kaufman
+    given-names: Darrell
+  year: 2020
+  doi: 10.1038/s41597-020-0445-3
+  journal: Scientific Data
+  notes: Temperature 12k proxy database.
 - type: software
   title: The Paleoclimate Reconstruction Storehouse (PReSto) platform
   authors:

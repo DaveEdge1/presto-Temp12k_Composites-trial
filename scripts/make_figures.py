@@ -1,58 +1,85 @@
 #!/usr/bin/env python3
-"""DEMO: reconstruction.csv → figures/reconstruction_ts.png.
+"""Figures for the Temperature 12k multi-method composite.
 
-Saves one figure per file in $OUT/figures. The static-Pages visualize
-fallback in .github/workflows/visualize.yml surfaces every PNG in this
-directory; add more figures here as your output schema grows.
+  reconstruction_gmst.png    -- consensus median + 5-95% band vs age (ka BP)
+  reconstruction_methods.png -- per-method medians overlaid
+  sample_depth.png           -- pooled ensemble members contributing per bin
 
-──────────────────────────────────────────────────────────────────────
-TODO: REPLACE with your own plotting code.
-
-Useful patterns from existing PReSto templates:
-    • LMR2 produces lat/lon maps of trend + climatology bands.
-    • Holocene-DA produces composite time-series + spatial-anomaly maps.
-    • BayGMST produces a reconstruction TS, posterior trace plots,
-      and residual ACF/PACF diagnostics.
-Pick what serves your science best.
-──────────────────────────────────────────────────────────────────────
+Every PNG in the figures dir is surfaced on the static-Pages tile UI.
 """
-
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")  # headless backend; CI has no display
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 
 def make(in_csv: Path, out_dir: Path) -> None:
-    df = pd.read_csv(in_csv).sort_values("year")
     out_dir.mkdir(parents=True, exist_ok=True)
+    df = pd.read_csv(in_csv)
+    if "age_bp" in df.columns:
+        kyr = df["age_bp"].to_numpy(dtype=float) / 1000.0
+    else:
+        kyr = (1950 - df["year"].to_numpy(dtype=float)) / 1000.0
 
-    fig, ax = plt.subplots(figsize=(9, 4), dpi=150)
+    # 1) consensus GMST with uncertainty band
+    fig, ax = plt.subplots(figsize=(9, 4.5))
     if {"lo_95", "hi_95"}.issubset(df.columns):
-        ax.fill_between(df["year"], df["lo_95"], df["hi_95"],
-                        alpha=0.25, label="95% band", linewidth=0)
-    ax.plot(df["year"], df["mean"], lw=1.2, label="reconstruction")
-    ax.set_xlabel("Year AD")
-    ax.set_ylabel("Composite (z-score units)")
-    ax.set_title("PReSto template — demo reconstruction (z-score composite)")
-    ax.legend(loc="best", frameon=False)
+        ax.fill_between(kyr, df["lo_95"], df["hi_95"], color="0.8",
+                        label="5-95% (multi-method)", linewidth=0)
+    ax.plot(kyr, df["mean"], color="firebrick", lw=2, label="consensus median")
+    ax.axhline(0, color="k", lw=0.6)
+    ax.set_xlim(np.nanmax(kyr), np.nanmin(kyr))      # 12 ka left, present right
+    ax.set_xlabel("Age (ka BP)")
+    ax.set_ylabel("Temperature anomaly (°C, vs 1800-1900)")
+    ax.set_title("Temperature 12k multi-method composite GMST")
+    ax.legend(loc="lower left", fontsize=8, frameon=False)
     ax.grid(alpha=0.3, linewidth=0.5)
     fig.tight_layout()
-
-    out_path = out_dir / "reconstruction_ts.png"
-    fig.savefig(out_path, bbox_inches="tight")
+    fig.savefig(out_dir / "reconstruction_gmst.png", dpi=130)
     plt.close(fig)
-    print(f"[make_figures] wrote {out_path}")
+
+    # 2) per-method medians overlay
+    meth_cols = [c for c in df.columns if c.endswith("_median")]
+    if meth_cols:
+        fig, ax = plt.subplots(figsize=(9, 4.5))
+        for c in meth_cols:
+            ax.plot(kyr, df[c], lw=1.3, label=c.replace("_median", "").upper())
+        ax.plot(kyr, df["mean"], color="k", lw=2.2, label="consensus")
+        ax.axhline(0, color="k", lw=0.6)
+        ax.set_xlim(np.nanmax(kyr), np.nanmin(kyr))
+        ax.set_xlabel("Age (ka BP)")
+        ax.set_ylabel("Temperature anomaly (°C)")
+        ax.set_title("Per-method medians")
+        ax.legend(loc="lower left", fontsize=8, ncol=2, frameon=False)
+        ax.grid(alpha=0.3, linewidth=0.5)
+        fig.tight_layout()
+        fig.savefig(out_dir / "reconstruction_methods.png", dpi=130)
+        plt.close(fig)
+
+    # 3) sample depth
+    if "n_members" in df.columns:
+        fig, ax = plt.subplots(figsize=(9, 2.8))
+        ax.fill_between(kyr, 0, df["n_members"], color="steelblue", alpha=0.7)
+        ax.set_xlim(np.nanmax(kyr), np.nanmin(kyr))
+        ax.set_xlabel("Age (ka BP)")
+        ax.set_ylabel("ensemble members")
+        ax.set_title("Pooled ensemble depth")
+        fig.tight_layout()
+        fig.savefig(out_dir / "sample_depth.png", dpi=130)
+        plt.close(fig)
+
+    print(f"[make_figures] wrote figures to {out_dir}")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--in-csv",  required=True, type=Path)
+    ap.add_argument("--in-csv", required=True, type=Path)
     ap.add_argument("--out-dir", required=True, type=Path)
     args = ap.parse_args()
     make(args.in_csv, args.out_dir)

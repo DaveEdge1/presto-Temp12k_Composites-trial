@@ -1,0 +1,38 @@
+75th percentile of all values:
+  annual: 2.0589
+75th percentile of all values without d18o:
+  annual: 1.9759
+alkenone:
+  annual: 1.65
+chironomid:
+  summer: 1.3997
+d18o:
+  annual: 2.1
+gdgt (mbt/cbt as well as brgdgt fractional abundance):
+  annual: 2.9029
+gdgt (tex86):
+  annual: 2.3333
+mean of all values:
+  annual: 1.7639
+median of all values:
+  annual: 1.7
+mgca:
+  annual: 1.85
+  summer: 1.85
+  winter: 1.85
+other microfossils/diatoms:
+  summer: 1.1224
+other microfossils/dinocyst:
+  annual: 1.2
+  summer: 1.7
+  winter: 1.2
+other microfossils/foraminifera:
+  annual: 1.2825
+  summer: 1.325
+  winter: 1.4125
+other microfossils/radiolaria:
+  summer: 1.2
+pollen:
+  annual: 2.1057
+  summer: 2.0178
+  winter: 3.0129

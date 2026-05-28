@@ -1,65 +1,46 @@
-# Self-contained container for a PReSto reconstruction.
+# Temperature 12k multi-method composite container (R + Python).
 #
-# Three layers, ordered by change frequency (least → most). Docker
-# caches each layer independently, so editing scripts/ re-runs only the
-# final COPY (≪ 1 s) instead of rebuilding the conda env.
+# Base = davidedge/lipd_webapps:lipdbase2, which already ships the R stack the
+# composite methods need (lipdR, geoChronR, compositeR) inside an renv project
+# rooted at /. We add a small Python venv for the LiPD-pickle adapter, the GAM
+# method (pygam), and the consensus / NetCDF / figure steps.
 #
-# CUSTOMIZATION POINTS:
-#   1. Base image: stick with continuumio/miniconda3 unless your algorithm
-#      needs something exotic (e.g., GPU CUDA → nvidia/cuda + miniconda).
-#   2. environment.yml: list your reconstruction's deps.
-#   3. COPY layout: add your own subdirectories (e.g., COPY my_algo/).
+# Layers ordered least->most frequently changed so script edits rebuild fast.
 
-# ── Layer 1: base + system deps ────────────────────────────────────────
-# Pinned for reproducibility. Bump deliberately (every ~6 mo) and
-# re-test end-to-end before pushing.
-FROM continuumio/miniconda3:24.7.1-0
+# ── Layer 1: base (R + lipdR/geoChronR/compositeR via renv at /) ──────────
+FROM davidedge/lipd_webapps:lipdbase2
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    TZ=UTC
+ENV DEBIAN_FRONTEND=noninteractive TZ=UTC
 
-# Most scientific Python stacks need at least these. Add to this list
-# if your algorithm needs more system libraries (GDAL, HDF5 variants,
-# proprietary drivers, etc.).
+# ── Layer 2: Python venv (heavy, cached until deps change) ────────────────
+# The base image's python3 ships without pip/ensurepip, so install
+# python3-venv + python3-pip via apt first, then build an isolated venv.
+# numpy/pandas/scipy/xarray/netcdf4/matplotlib + pygam (GAM) + pyyaml.
+# netcdf4 manylinux wheels bundle libnetcdf, so no apt system lib needed.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential gcc g++ gfortran make pkg-config git curl ca-certificates \
-        libcurl4-openssl-dev libssl-dev libxml2-dev \
-        libnetcdf-dev libhdf5-dev \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+        python3-venv python3-pip \
+    && rm -rf /var/lib/apt/lists/*
 
+RUN python3 -m venv /opt/venv && \
+    /opt/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    /opt/venv/bin/pip install --no-cache-dir \
+        numpy pandas scipy pyyaml xarray netcdf4 "matplotlib>=3.6" pygam && \
+    /opt/venv/bin/python -c "import numpy, pandas, scipy, yaml, xarray, netCDF4, matplotlib, pygam; print('venv deps OK')"
+
+ENV PYTHON_BIN=/opt/venv/bin/python
+
+# ── Layer 3: app source (cheap; iterates often) ───────────────────────────
 WORKDIR /app
-
-# ── Layer 2: conda env (heavy, but cached) ────────────────────────────
-# This layer only rebuilds when environment.yml changes. Cold build is
-# ~5–10 minutes; cached rebuild is ~5 seconds. Keep environment.yml
-# tightly scoped (see comments in that file).
-COPY environment.yml /app/environment.yml
-RUN conda env create -f /app/environment.yml && \
-    conda clean -afy && \
-    find /opt/conda -follow -type f -name '*.a'     -delete && \
-    find /opt/conda -follow -type f -name '*.pyc'   -delete && \
-    find /opt/conda -follow -type f -name '*.js.map' -delete
-
-# Activate the env for all subsequent RUN / ENTRYPOINT layers.
-ENV PATH=/opt/conda/envs/presto-env/bin:$PATH \
-    CONDA_DEFAULT_ENV=presto-env \
-    CONDA_PREFIX=/opt/conda/envs/presto-env
-
-# ── Layer 3: app source (cheap; iterates often) ───────────────────────
-# Anything below this line rebuilds whenever you edit a script. Keep
-# heavy work above so iteration stays fast.
 COPY scripts/        /app/scripts/
 COPY config/         /app/config/
 COPY reference_data/ /app/reference_data/
 COPY entrypoint.sh   /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-# CI mounts these paths at runtime:
-#   /proxies/lipd_legacy.pkl       (RO)   — proxy data from lipdverse
-#   /app/config/user_config.yml    (RO)   — overwritten per run by PReSto
-#   /results                       (RW)   — outputs land here
-# Defaults below let `docker run presto-template:local` work standalone
-# for local dev (mount a pickle into /proxies/lipd_legacy.pkl first).
+# CI mounts at runtime:
+#   /proxies/lipd_legacy.pkl     (RO)  proxy data from lipdverse
+#   /app/config/user_config.yml  (RO)  overwritten per run by PReSto
+#   /results                     (RW)  outputs land here
 ENV LIPD_PICKLE=/proxies/lipd_legacy.pkl \
     PRESTO_CONFIG=/app/config/user_config.yml \
     PRESTO_REFDATA=/app/reference_data \

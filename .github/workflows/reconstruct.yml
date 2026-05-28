@@ -1,16 +1,15 @@
-# Core reconstruction pipeline. Two jobs:
-#   prepare-data  — acquires the LiPD proxy data (one of two pathways)
-#   reconstruct   — builds the container, runs the pipeline, commits results
+# Core reconstruction pipeline. Three jobs:
+#   prepare-data  — acquires the LiPD proxy data (archived pickle or filtered query)
+#   reconstruct   — MATRIX: one parallel job per method (scc/dcc/gam/cps/paico),
+#                   each runs the container for just its method and uploads that
+#                   method's per-band global ensemble CSV. Wall-clock ≈ slowest method.
+#   combine       — pools the per-method ensembles into the multi-method consensus,
+#                   writes NetCDF + figures, commits results.
 #
-# Triggered automatically when PReSto commits `query_params.json`, or
-# manually via the Actions tab (workflow_dispatch).
-#
-# CUSTOMIZATION: most authors don't need to edit this file. The two
-# things that ARE template-specific are baked into the algorithm / scripts
-# layers (Dockerfile, environment.yml, scripts/*). The artifact names
-# below use generic prefixes (`reconstruction-...`) so visualize.yml,
-# release-recon.yml, and update-readme.yml can find them without
-# per-template renaming.
+# Triggered automatically when PReSto commits `query_params.json`, or manually
+# via the Actions tab (workflow_dispatch). The final `reconstruction-<run_id>`
+# artifact + the `Reconstruction` workflow name are what visualize.yml,
+# release-recon.yml and update-readme.yml key off (don't rename them).
 
 name: Reconstruction
 
@@ -153,13 +152,18 @@ jobs:
           path: lipd_legacy.pkl
           retention-days: 7
 
-  # ── Job 2: Build container + run reconstruction ─────────────────────
+  # ── Job 2: Reconstruct each method as its own parallel matrix job ────
+  # The five Temperature 12k methods are independent, so each runs on its own
+  # runner (PRESTO_STAGE=methods, PRESTO_ONLY_METHOD=<m>) and uploads just its
+  # per-method global-ensemble CSV. Wall-clock ≈ the slowest single method.
   reconstruct:
     needs: prepare-data
     runs-on: ubuntu-latest
     timeout-minutes: 240
-    permissions:
-      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        method: [scc, dcc, gam, cps, paico]
 
     steps:
       - name: Checkout repository
@@ -171,54 +175,73 @@ jobs:
           name: reconstruction-proxy-data-${{ github.run_id }}
 
       - name: Build container
-        # The from-scratch Dockerfile here takes ~10 min cold and ~1 min
-        # cached. Cache hit relies on environment.yml + Dockerfile being
-        # unchanged since the previous build.
-        run: docker build -t presto-template:local .
+        run: docker build -t presto-temp12k:local .
 
-      - name: Run reconstruction pipeline
+      - name: Run ${{ matrix.method }}
         run: |
           mkdir -p ./results
-          echo "Config in use:"
-          cat config/user_config.yml
-          echo "---"
           docker run --rm \
+            -e PRESTO_STAGE=methods \
+            -e PRESTO_ONLY_METHOD=${{ matrix.method }} \
             -v $(pwd)/lipd_legacy.pkl:/proxies/lipd_legacy.pkl:ro \
             -v $(pwd)/config/user_config.yml:/app/config/user_config.yml:ro \
             -v $(pwd)/results:/results \
-            presto-template:local
+            presto-temp12k:local
+
+      - name: Verify method output
+        run: |
+          if [ ! -f "./results/methods/${{ matrix.method }}_global.csv" ]; then
+            echo "ERROR: ${{ matrix.method }}_global.csv not produced."; ls -lR ./results/ || true; exit 1
+          fi
+          ls -lh ./results/methods/
+
+      - name: Upload per-method ensemble
+        uses: actions/upload-artifact@v4
+        with:
+          name: recon-method-${{ matrix.method }}-${{ github.run_id }}
+          path: ./results/methods/${{ matrix.method }}_global.csv
+          retention-days: 7
+
+  # ── Job 3: Pool the per-method ensembles into the consensus + outputs ──
+  combine:
+    needs: reconstruct
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build container
+        run: docker build -t presto-temp12k:local .
+
+      - name: Download all per-method ensembles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: recon-method-*-${{ github.run_id }}
+          merge-multiple: true
+          path: ./results/methods
+
+      - name: List collected method ensembles
+        run: ls -lh ./results/methods/
+
+      - name: Combine -> consensus + NetCDF + figures
+        run: |
+          docker run --rm \
+            -e PRESTO_STAGE=combine \
+            -v $(pwd)/config/user_config.yml:/app/config/user_config.yml:ro \
+            -v $(pwd)/results:/results \
+            presto-temp12k:local
 
       - name: Verify reconstruction results
         run: |
           if [ ! -f ./results/reconstruction.csv ]; then
-            echo "ERROR: reconstruction.csv not produced. Contents of ./results:"
-            ls -lR ./results/ || true
-            exit 1
+            echo "ERROR: reconstruction.csv not produced."; ls -lR ./results/ || true; exit 1
           fi
           echo "Reconstruction completed successfully."
           ls -lhR ./results/
-
-      - name: Generate configs.yml for visualization
-        # visualize.yml's presto-viz path expects configs.yml alongside
-        # the NetCDFs. Flatten the user_config into the simple
-        # {presto_config: {key: {value: ...}}} format that presto-viz reads.
-        run: |
-          python3 -c "
-          import yaml
-          with open('config/user_config.yml') as f:
-              flat = yaml.safe_load(f)
-          def flatten(d, prefix=''):
-              for k, v in d.items():
-                  key = f'{prefix}{k}' if not prefix else f'{prefix}.{k}'
-                  if isinstance(v, dict):
-                      yield from flatten(v, key)
-                  else:
-                      yield key, v
-          nested = {'presto_config': {k: {'value': str(v)} for k, v in flatten(flat)}}
-          with open('results/configs.yml', 'w') as f:
-              yaml.dump(nested, f, default_flow_style=False)
-          "
-          cat results/configs.yml
 
       - name: Upload reconstruction artifact
         uses: actions/upload-artifact@v4
@@ -239,9 +262,6 @@ jobs:
             echo "No files under 100MB to commit"
           else
             git commit -m "Add reconstruction results for ${{ github.run_id }}"
-            # actions/checkout@v4 leaves HEAD detached on a SHA; the rebase
-            # below then succeeds but `git push` fails with "not currently on
-            # a branch". Push HEAD explicitly at the target branch instead.
             BRANCH="${{ github.ref_name }}"
             for i in 1 2 3; do
               git pull --rebase origin "$BRANCH" && git push origin "HEAD:$BRANCH" && break || sleep $((i*5))

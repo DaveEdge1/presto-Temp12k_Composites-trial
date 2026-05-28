@@ -1,19 +1,16 @@
 #!/usr/bin/env bash
-# Orchestrates the demo reconstruction pipeline inside the container.
+# Orchestrates the Temperature 12k multi-method composite pipeline.
 #
-# Pipeline (DEMO):
-#   1. lipd_to_input.py     — LiPD pickle  → proxy_matrix.csv + proxy_metadata.csv
-#   2. reconstruct.py       — proxy_matrix → reconstruction.csv (mean composite)
-#   3. outputs_to_netcdf.py — reconstruction.csv → reconstruction.nc (1D CF-NetCDF)
-#   4. make_figures.py      — reconstruction.csv → figures/reconstruction_ts.png
+# Stages (PRESTO_STAGE env):
+#   full     (default) adapter -> all methods -> consensus -> NetCDF + figures
+#   methods            adapter -> the enabled method(s) -> methods/<m>_global.csv
+#   combine            consensus + NetCDF + figures from existing methods/*.csv
+# The CI matrix runs one `methods` job per method (PRESTO_ONLY_METHOD=<m>) in
+# parallel, then a single `combine` job assembles the consensus.
 #
-# CUSTOMIZATION POINTS:
-#   - Add / remove steps as your algorithm needs.
-#   - Read env vars (LIPD_PICKLE, PRESTO_CONFIG, PRESTO_OUTPUT, PRESTO_REFDATA)
-#     instead of hard-coding paths — CI mounts these at consistent locations.
-#   - Set `set -e` (already on) so any failing step halts the run.
-#   - Anything you `echo` here shows up in the Actions log; use this for
-#     progress messages and config dumps that aid debugging.
+# CI mounts:  /proxies/lipd_legacy.pkl (RO), /app/config/user_config.yml (RO), /results (RW)
+# R packages (lipdR/geoChronR/compositeR) live in the renv project at / -- the R
+# step runs from there so renv activates and the library resolves.
 
 set -euo pipefail
 
@@ -21,50 +18,67 @@ LIPD_PICKLE="${LIPD_PICKLE:-/proxies/lipd_legacy.pkl}"
 CONFIG="${PRESTO_CONFIG:-/app/config/user_config.yml}"
 REFDATA="${PRESTO_REFDATA:-/app/reference_data}"
 OUT="${PRESTO_OUTPUT:-/results}"
+PY="${PYTHON_BIN:-/opt/venv/bin/python}"
+STAGE="${PRESTO_STAGE:-full}"
+ONLY="${PRESTO_ONLY_METHOD:-}"
 
-mkdir -p "$OUT" "$OUT/figures"
+mkdir -p "$OUT" "$OUT/methods" "$OUT/figures"
+echo "[entrypoint] stage=$STAGE only_method=${ONLY:-<all>} OUT=$OUT"
 
-echo "[entrypoint] presto-template demo pipeline"
-echo "[entrypoint] LIPD_PICKLE=$LIPD_PICKLE"
-echo "[entrypoint] CONFIG=$CONFIG"
-echo "[entrypoint] OUT=$OUT"
-echo "[entrypoint] config in use:"
-cat "$CONFIG"
-echo "[entrypoint] ---"
+# Effective config: when PRESTO_ONLY_METHOD is set (matrix job), enable just that
+# one method so the container computes a single per-method global ensemble.
+CONFIG_EFF="$CONFIG"
+if [ -n "$ONLY" ]; then
+  CONFIG_EFF="$OUT/_config_${ONLY}.yml"
+  $PY -c "import yaml; c=yaml.safe_load(open('$CONFIG')) or {}; c['methods']={k:(k=='$ONLY') for k in ['scc','dcc','gam','cps','paico']}; yaml.safe_dump(c, open('$CONFIG_EFF','w'))"
+fi
 
-# Step 1: LiPD → proxy matrix CSV.
-# TODO: REPLACE if your algorithm reads LiPD records differently (e.g.,
-# you need PSM calibration, time-axis re-binning, or a non-LiPD source).
-echo "[entrypoint] Step 1/4: LiPD pickle → proxy matrix"
-python /app/scripts/lipd_to_input.py \
-    --pickle       "$LIPD_PICKLE" \
-    --out-matrix   "$OUT/proxy_matrix.csv" \
-    --out-metadata "$OUT/proxy_metadata.csv"
+if [ "$STAGE" = "full" ] || [ "$STAGE" = "methods" ]; then
+  echo "[entrypoint] config in use:"; cat "$CONFIG_EFF"; echo "---"
 
-# Step 2: run the demo reconstruction algorithm.
-# TODO: REPLACE — this is where your science goes.
-echo "[entrypoint] Step 2/4: reconstruction"
-python /app/scripts/reconstruct.py \
-    --proxy-matrix "$OUT/proxy_matrix.csv" \
-    --config       "$CONFIG" \
-    --out-csv      "$OUT/reconstruction.csv"
+  echo "[entrypoint] Step: LiPD pickle -> proxy_ts.json"
+  UNC_ARG=""
+  [ -f "$REFDATA/proxy_uncertainties.yml" ] && UNC_ARG="--uncertainties $REFDATA/proxy_uncertainties.yml"
+  $PY /app/scripts/lipd_to_ts.py --pickle "$LIPD_PICKLE" --out-json "$OUT/proxy_ts.json" $UNC_ARG
 
-# Step 3: emit a CF-friendly NetCDF (presto-viz consumes this if it's
-# spatial; otherwise the static-Pages visualize.yml fallback picks up
-# the CSV + figures and ignores the .nc).
-# TODO: REPLACE if your output is gridded (lat/lon/time) — emit those
-# dims so visualize.yml's autodetect routes you to presto-viz.
-echo "[entrypoint] Step 3/4: CSV → NetCDF"
-python /app/scripts/outputs_to_netcdf.py \
-    --in-csv "$OUT/reconstruction.csv" \
-    --out-nc "$OUT/reconstruction.nc"
+  echo "[entrypoint] Step: R methods (SCC/DCC/CPS/PaiCo, per config)"
+  ( cd / && Rscript /app/scripts/run_methods.R \
+      --ts "$OUT/proxy_ts.json" --config "$CONFIG_EFF" \
+      --refdata "$REFDATA" --out-dir "$OUT/methods" )
 
-# Step 4: figures. Drop more PNGs into $OUT/figures as needed; the
-# static-Pages visualize fallback surfaces whatever is here.
-echo "[entrypoint] Step 4/4: figures"
-python /app/scripts/make_figures.py \
-    --in-csv  "$OUT/reconstruction.csv" \
-    --out-dir "$OUT/figures"
+  GAM_ON=$($PY -c "import yaml;print(bool((yaml.safe_load(open('$CONFIG_EFF')).get('methods') or {}).get('gam', True)))")
+  if [ "$GAM_ON" = "True" ]; then
+    echo "[entrypoint] Step: GAM (pygam)"
+    $PY /app/scripts/gam_method.py --ts "$OUT/proxy_ts.json" --config "$CONFIG_EFF" \
+        --grid "$REFDATA/equal_area_grid_centers.csv" --out-csv "$OUT/methods/gam_global.csv"
+  fi
+fi
 
-echo "[entrypoint] Done. Contents of $OUT:"
-ls -lhR "$OUT"
+if [ "$STAGE" = "full" ] || [ "$STAGE" = "combine" ]; then
+  echo "[entrypoint] Step: consensus combine"
+  $PY /app/scripts/combine_consensus.py --methods-dir "$OUT/methods" --out-csv "$OUT/reconstruction.csv"
+
+  echo "[entrypoint] Step: CSV -> NetCDF"
+  $PY /app/scripts/outputs_to_netcdf.py --in-csv "$OUT/reconstruction.csv" --out-nc "$OUT/reconstruction.nc"
+
+  echo "[entrypoint] Step: figures"
+  $PY /app/scripts/make_figures.py --in-csv "$OUT/reconstruction.csv" --out-dir "$OUT/figures"
+
+  # results/configs.yml for the visualization / reuse UI (flatten the real config)
+  $PY - "$CONFIG" "$OUT/configs.yml" <<'PY'
+import sys, yaml
+flat = yaml.safe_load(open(sys.argv[1])) or {}
+def walk(d, p=''):
+    for k, v in d.items():
+        key = f'{p}.{k}' if p else k
+        if isinstance(v, dict):
+            yield from walk(v, key)
+        else:
+            yield key, v
+yaml.safe_dump({'presto_config': {k: {'value': str(v)} for k, v in walk(flat)}},
+               open(sys.argv[2], 'w'), default_flow_style=False)
+PY
+fi
+
+echo "[entrypoint] Done (stage=$STAGE). Contents of $OUT:"
+ls -lhR "$OUT" || true
