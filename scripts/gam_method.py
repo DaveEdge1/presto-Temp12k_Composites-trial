@@ -149,7 +149,7 @@ def _gam_member(k):
                 cell_curves.append(curve)
         if cell_curves:
             band_mat[:, b] = np.nanmean(np.vstack(cell_curves), axis=0)
-    return area_weight(band_mat)
+    return band_mat                                   # (nbins x N_BANDS) per member
 
 
 def run_gam(ts_path, cfg, grid, out_csv):
@@ -190,14 +190,23 @@ def run_gam(ts_path, cfg, grid, out_csv):
             cols = pool.map(_gam_member, range(nens))
     else:
         cols = [_gam_member(k) for k in range(nens)]
-    ens = np.column_stack(cols)
-
-    ens = apply_reference(ens, bin_ages, refp.get("start", 1800), refp.get("end", 1900))
-    df = pd.DataFrame(ens, columns=[f"ens{i+1}" for i in range(nens)])
-    df.insert(0, "binAges", bin_ages)
+    # cols: list of (nbins x N_BANDS) per-member band matrices
+    rs, re = refp.get("start", 1800), refp.get("end", 1900)
+    glob = apply_reference(np.column_stack([area_weight(m) for m in cols]), bin_ages, rs, re)
     Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(out_csv, index=False)
-    print(f"[gam] wrote {out_csv} ({bin_ages.size} bins x {nens} members)", file=sys.stderr)
+    g = pd.DataFrame(glob, columns=[f"ens{i+1}" for i in range(nens)]); g.insert(0, "binAges", bin_ages)
+    g.to_csv(out_csv, index=False)
+
+    # per-band ensembles (long: binAges, band, ens...) for the zonal consensus
+    band_frames = []
+    for b in range(N_BANDS):
+        be = apply_reference(np.column_stack([m[:, b] for m in cols]), bin_ages, rs, re)
+        bf = pd.DataFrame(be, columns=[f"ens{i+1}" for i in range(nens)])
+        bf.insert(0, "band", b + 1); bf.insert(0, "binAges", bin_ages)
+        band_frames.append(bf)
+    bands_csv = str(out_csv).replace("_global.csv", "_bands.csv")
+    pd.concat(band_frames, ignore_index=True).to_csv(bands_csv, index=False)
+    print(f"[gam] wrote {out_csv} + {bands_csv} ({bin_ages.size} bins x {nens} members)", file=sys.stderr)
 
 
 def main():

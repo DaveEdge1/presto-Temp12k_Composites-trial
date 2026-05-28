@@ -163,7 +163,7 @@ run_paico <- function(fts, bandIdx, binvec, binAges, nens,
       # interpolate the 200-yr signal onto the shared output grid
       bandMat[, b] <- approx(pbinAges, sig, xout = binAges, rule = 2)$y
     }
-    area_weight(bandMat)
+    bandMat                                   # full (nbins x N_BANDS) per member
   }
 
   ncores <- as.integer(cfg$ncores %||% 1)
@@ -173,6 +173,12 @@ run_paico <- function(fts, bandIdx, binvec, binAges, nens,
   } else {
     cols <- lapply(seq_len(nens), one_member)
   }
-  globalEns <- do.call(cbind, cols)
-  apply_reference(globalEns, binAges, cfg$ref_start %||% 1800, cfg$ref_end %||% 1900)
+  nb <- length(binAges)
+  cols <- lapply(cols, function(m)
+    if (is.matrix(m) && all(dim(m) == c(nb, N_BANDS))) m else matrix(NA_real_, nb, N_BANDS))
+  rs <- cfg$ref_start %||% 1800; re <- cfg$ref_end %||% 1900
+  globalEns <- apply_reference(vapply(cols, area_weight, numeric(nb)), binAges, rs, re)
+  bandEns <- lapply(seq_len(N_BANDS), function(b)
+    apply_reference(vapply(cols, function(m) m[, b], numeric(nb)), binAges, rs, re))
+  list(global = globalEns, bands = bandEns)
 }

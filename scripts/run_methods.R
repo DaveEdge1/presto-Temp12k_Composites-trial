@@ -184,7 +184,7 @@ run_method <- function(method, fts, bandIdx, gridIdx, binvec, binAges, nens,
       }
       bandMat[, b] <- comp
     }
-    area_weight(bandMat)
+    bandMat                                   # full (nbins x N_BANDS) per member
   }
 
   ncores <- as.integer(cfg$ncores %||% 1)
@@ -194,9 +194,15 @@ run_method <- function(method, fts, bandIdx, gridIdx, binvec, binAges, nens,
   } else {
     cols <- lapply(seq_len(nens), one_member)
   }
-  globalEns <- do.call(cbind, cols)
-  apply_reference(globalEns, binAges,
-                  cfg$ref_start %||% 1800, cfg$ref_end %||% 1900)
+  nb <- length(binAges)
+  cols <- lapply(cols, function(m)
+    if (is.matrix(m) && all(dim(m) == c(nb, N_BANDS))) m else matrix(NA_real_, nb, N_BANDS))
+
+  rs <- cfg$ref_start %||% 1800; re <- cfg$ref_end %||% 1900
+  globalEns <- apply_reference(vapply(cols, area_weight, numeric(nb)), binAges, rs, re)
+  bandEns <- lapply(seq_len(N_BANDS), function(b)
+    apply_reference(vapply(cols, function(m) m[, b], numeric(nb)), binAges, rs, re))
+  list(global = globalEns, bands = bandEns)
 }
 
 # Vendored copy of compositeR's scaleComposite (it is defined in the package but
@@ -331,17 +337,29 @@ main <- function() {
     ncores = ncores,
     ref_start = refp$start, ref_end = refp$end)
 
+  # write <m>_global.csv (binAges + ens) and <m>_bands.csv (binAges, band, ens)
+  write_method_output <- function(m, res) {
+    ne <- ncol(res$global)
+    g <- data.frame(binAges = binAges, res$global)
+    names(g) <- c("binAges", paste0("ens", seq_len(ne)))
+    write.csv(g, file.path(out_dir, paste0(m, "_global.csv")), row.names = FALSE)
+    bl <- lapply(seq_along(res$bands), function(b) {
+      df <- data.frame(binAges = binAges, band = b, res$bands[[b]])
+      names(df) <- c("binAges", "band", paste0("ens", seq_len(ne)))
+      df
+    })
+    write.csv(do.call(rbind, bl), file.path(out_dir, paste0(m, "_bands.csv")), row.names = FALSE)
+  }
+
   for (m in c("scc", "dcc", "cps")) {
     if (!isTRUE(methods_on[[m]])) next
     cat(sprintf("[run_methods] running %s (nens=%d) ...\n", toupper(m), nens))
     t0 <- Sys.time()
-    ens <- run_method(m, fts, bandIdx, gridIdx, binvec, binAges, nens,
+    res <- run_method(m, fts, bandIdx, gridIdx, binvec, binAges, nens,
                       cps_targets = cps_targets, cfg = method_cfg)
-    out <- data.frame(binAges = binAges, ens)
-    names(out) <- c("binAges", paste0("ens", seq_len(nens)))
-    write.csv(out, file.path(out_dir, paste0(m, "_global.csv")), row.names = FALSE)
-    cat(sprintf("[run_methods] %s done in %.1fs -> %s_global.csv\n",
-                toupper(m), as.numeric(difftime(Sys.time(), t0, units = "secs")), m))
+    write_method_output(m, res)
+    cat(sprintf("[run_methods] %s done in %.1fs -> %s_global.csv + %s_bands.csv\n",
+                toupper(m), as.numeric(difftime(Sys.time(), t0, units = "secs")), m, m))
   }
 
   # PaiCo (sourced) -- same binning, pairwise-comparison reconstruction
@@ -351,14 +369,12 @@ main <- function() {
     if (file.exists(paico_src)) {
       source(paico_src)
       cat("[run_methods] running PaiCo ...\n")
-      ens <- run_paico(fts, bandIdx, binvec, binAges, nens,
+      res <- run_paico(fts, bandIdx, binvec, binAges, nens,
                        cps_targets = paico_targets, area_weight = area_weight,
                        band_weights = BAND_WEIGHTS, apply_reference = apply_reference,
                        cfg = method_cfg)
-      out <- data.frame(binAges = binAges, ens)
-      names(out) <- c("binAges", paste0("ens", seq_len(nens)))
-      write.csv(out, file.path(out_dir, "paico_global.csv"), row.names = FALSE)
-      cat("[run_methods] PaiCo done -> paico_global.csv\n")
+      write_method_output("paico", res)
+      cat("[run_methods] PaiCo done -> paico_global.csv + paico_bands.csv\n")
     } else {
       cat("[run_methods] paico.R not found; skipping PaiCo\n")
     }

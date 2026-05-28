@@ -195,11 +195,11 @@ jobs:
           fi
           ls -lh ./results/methods/
 
-      - name: Upload per-method ensemble
+      - name: Upload per-method ensembles (global + per-band)
         uses: actions/upload-artifact@v4
         with:
           name: recon-method-${{ matrix.method }}-${{ github.run_id }}
-          path: ./results/methods/${{ matrix.method }}_global.csv
+          path: ./results/methods/${{ matrix.method }}_*.csv
           retention-days: 7
 
   # ── Job 3: Pool the per-method ensembles into the consensus + outputs ──

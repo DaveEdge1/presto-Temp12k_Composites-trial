@@ -64,6 +64,11 @@ if [ "$STAGE" = "full" ] || [ "$STAGE" = "combine" ]; then
   echo "[entrypoint] Step: figures"
   $PY /app/scripts/make_figures.py --in-csv "$OUT/reconstruction.csv" --out-dir "$OUT/figures"
 
+  echo "[entrypoint] Step: validation vs published Temp12k curves"
+  $PY /app/scripts/validate.py --recon "$OUT/reconstruction.csv" \
+      --refdir "$REFDATA/published" --out-dir "$OUT" \
+      || echo "[entrypoint] validation step failed (non-fatal)"
+
   # results/configs.yml for the visualization / reuse UI (flatten the real config)
   $PY - "$CONFIG" "$OUT/configs.yml" <<'PY'
 import sys, yaml
