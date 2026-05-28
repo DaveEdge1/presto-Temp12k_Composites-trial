@@ -114,7 +114,7 @@ jobs:
   visualize-spatial:
     needs: [find-latest-run, inspect-output]
     if: needs.inspect-output.outputs.is_spatial == 'true'
-    uses: DaveEdge1/presto-viz/.github/workflows/presto-viz-reusable.yml@main
+    uses: DaveEdge1/presto-viz/.github/workflows/presto-viz-reusable.yml@add-temp12k
     with:
       reconstruction_id: Reconstruction_Run_${{ needs.find-latest-run.outputs.run_number }}_Reviz_${{ github.run_number }}
       artifact_name:     recon-data-for-viz-${{ github.run_number }}
