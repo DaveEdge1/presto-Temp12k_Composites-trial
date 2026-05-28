@@ -94,7 +94,9 @@ def _query_summary(qp: dict) -> str:
 def build_body(cfg_path: Path, qp_path: Path,
                pages_url: str, releases_url: str, repo_url: str) -> str:
     cfg = yaml.safe_load(cfg_path.read_text()) or {}
-    qp  = json.loads(qp_path.read_text())
+    # query_params.json is committed by the PReSto server but absent on manual
+    # workflow_dispatch runs -- treat it as optional provenance.
+    qp  = json.loads(qp_path.read_text()) if qp_path.exists() else {}
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     return f"""{BEGIN}

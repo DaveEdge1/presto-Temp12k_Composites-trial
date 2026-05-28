@@ -95,8 +95,11 @@ jobs:
           # Snapshot the inputs that produced this reconstruction so the
           # release is self-describing.
           cp config/user_config.yml ./bundle/inputs/user_config.yml
-          cp query_params.json      ./bundle/inputs/query_params.json
-          [ -f README.md ]      && cp README.md      ./bundle/inputs/README.md
+          # query_params.json is committed by the PReSto server but absent on
+          # manual workflow_dispatch runs -- snapshot it only if present
+          # (|| true so the missing-file case doesn't trip `set -e`).
+          [ -f query_params.json ] && cp query_params.json ./bundle/inputs/query_params.json || true
+          [ -f README.md ]      && cp README.md      ./bundle/inputs/README.md      || true
           [ -f CITATION.cff ]   && cp CITATION.cff   ./bundle/inputs/CITATION.cff
           [ -f data_references.bib ] && cp data_references.bib ./bundle/inputs/data_references.bib
 
