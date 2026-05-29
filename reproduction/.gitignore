@@ -1,0 +1,7 @@
+# Derivable large caches and intermediates
+out/ts_all.rds
+out/fts_*.rds
+out/gam_pooled.csv
+out/probe_subset/
+# the LiPD sparse clone
+T12k/
