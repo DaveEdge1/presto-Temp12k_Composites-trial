@@ -137,20 +137,42 @@ one_member_compose <- function(m) {
   bandMat
 }
 
-# SCC one_member: bin each record -> equal-area grid -> per-cell anomaly vs 3-5ka -> rowMeans.
-# Matches SCC_GMST_122719.m's pipeline (gridding BEFORE standardization), using
-# real ageEnsemble draws via the authors' binFun.
+# SCC one_member -- FAITHFUL TO THE PUBLISHED UNCERTAINTY MODEL.
+# Matches SCC_GMST_122719.m line ~ "[bin_mean,...]=bin_x(TS(c(j)).age*normrnd(1,0.05),
+#   TS(c(j)).paleoData_values + normrnd(0,er,...), binVec)":
+#   * representative age = first ageEnsemble column (the single chronology series)
+#   * representative value = row-wise median across the value-ensemble matrix
+#   * per-record per-iteration: age *= N(1, 0.05) [SINGLE multiplicative scalar],
+#     value += N(0, unc) per sample where unc = paleoData_temperature12kUncertainty
+#     (default 1.5 degC, exactly the SCC.m fallback)
+#   * direct binning (no spread) -- matches MATLAB's bin_x
+# Pipeline: bin -> equal-area grid -> per-cell anomaly vs 3-5 ka -> mean cells per band.
 one_member_scc <- function(m) {
+  nb_edges <- length(binvec)
   bandMat <- matrix(NA_real_, nrow = length(binAges), ncol = N_BANDS)
   for (b in seq_len(N_BANDS)) {
     fi <- which(lat > LATBINS[b] & lat <= LATBINS[b + 1])
     if (length(fi) < 2) next
     bm <- vapply(fTS[fi], function(t) {
-      out <- tryCatch(
-        sampleEnsembleThenBinTs(ts = t, binvec = binvec, ageVar = "ageEnsemble", spread = TRUE,
-                                alignInterpDirection = FALSE),
-        error = function(e) rep(NA_real_, length(binAges)))
-      if (length(out) != length(binAges)) rep(NA_real_, length(binAges)) else out
+      ae <- t$ageEnsemble
+      age_rep <- if (!is.null(ae) && is.matrix(ae)) as.numeric(ae[, 1]) else as.numeric(t$age)
+      v <- t$paleoData_values
+      val_rep <- if (is.matrix(v) && NCOL(v) > 1) apply(v, 1, median, na.rm = TRUE) else as.numeric(v)
+      unc <- as.numeric(t$paleoData_uncertainty1sd %||% 1.5)
+      if (length(age_rep) != length(val_rep)) return(rep(NA_real_, length(binAges)))
+      this_age <- age_rep * rnorm(1, mean = 1, sd = 0.05)
+      this_val <- val_rep + rnorm(length(val_rep), mean = 0, sd = unc)
+      ok <- is.finite(this_age) & is.finite(this_val) &
+            this_age >= binvec[1] & this_age <= binvec[nb_edges]
+      out <- rep(NA_real_, length(binAges))
+      if (sum(ok) >= 3) {
+        bi <- findInterval(this_age[ok], binvec, all.inside = TRUE)
+        vok <- this_val[ok]
+        # mean per bin
+        s <- tapply(vok, bi, mean, na.rm = TRUE)
+        out[as.integer(names(s))] <- as.numeric(s)
+      }
+      out
     }, numeric(length(binAges)))
     if (is.null(dim(bm))) bm <- matrix(bm, ncol = length(fi))
     bm[!is.finite(bm)] <- NA

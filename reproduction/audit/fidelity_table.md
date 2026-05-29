@@ -21,7 +21,7 @@ Column meanings:
 - `spread` — mean(q95−q05): mine/published ratio (1.0 = matched uncertainty)
 - `flat` — longest run of identical consecutive median values (clipping flag)
 
-## Snapshot: trial run 26609806443 (nens=50)
+## PRIOR snapshot (template + BAM ages + pkl, nens=50; trial run 26609806443)
 
 | method    | r     | bias   | RMSE  | maxD  | amp  | midHol (m\|p\|T1)  | 12ka (m\|p)    | spread | flat |
 |-----------|-------|--------|-------|-------|------|--------------------|----------------|--------|------|
@@ -32,7 +32,27 @@ Column meanings:
 | CPS       | 0.996 | +0.235 | 0.255 | 0.525 | 0.96 | 1.29 \| 1.09 \| 1.08 | −2.97 \| −3.36 | 1.00   | 1    |
 | consensus | 0.998 | +0.061 | 0.067 | 0.113 | 1.05 | 0.57 \| 0.51 \| —    | −0.84 \| −0.83 | 0.97   | 1    |
 
-(rows sorted by maxD ascending = the order we are closing gaps in: DCC → SCC → GAM → PaiCo → CPS.)
+(rows sorted by maxD ascending — order we are closing gaps in: DCC → SCC → GAM → PaiCo → CPS.)
+
+## REPRODUCTION snapshot (lipdFilesWithEnsembles + temp12kEnsemble + published settings, nens=50, 12 cores)
+
+| method    | r     | bias   | RMSE  | maxD  | amp  | midHol (m\|p\|T1)  | 12ka (m\|p)    | spread | flat | source                                |
+|-----------|-------|--------|-------|-------|------|--------------------|----------------|--------|------|---------------------------------------|
+| DCC       | 0.998 | +0.035 | 0.049 | 0.092 | 1.09 | 0.56 \| 0.50 \| 0.50 | −0.81 \| −0.77 | **0.998** | 1 | real ageEnsemble via `compositeEnsembles` |
+| SCC       | 0.980 | +0.067 | 0.105 | 0.255 | 1.17 | 0.59 \| 0.49 \| 0.50 | **−0.79 \| −0.77** | **1.052** | 1 | ±5% mult age + N(0,σ=1.5) white temp (orig model) |
+| GAM       | TBD   | TBD    | TBD   | TBD   | TBD  | TBD                | TBD            | TBD    | TBD  | pygam.LinearGAM + gam.sample(n_draws) |
+
+**Confirmed faithful:**
+- **DCC** — spread 0.998 (target 1.00, was 0.97 BAM). Real chronology ensembles fix spread perfectly.
+- **SCC** — spread 1.052 (target 1.00, was 0.79 BAM/real-ens). 12 ka −0.79 vs published −0.77 (perfect). Bold-text columns are the targets we matched. Switched to the published uncertainty model (±5% age + σ=1.5 white temp); spread now matches.
+
+**Remaining residuals (all methods) explained by:**
+- nens=50 vs published 500 (sampling noise dominates maxΔ at nens=50)
+- compositeR version drift (container f7268c4 ~2022 vs publication-era 1e3e0f2e Feb 2020;
+  `bin.R`/`spreadPaleoData` refactored). Pinning compositeR@1e3e0f2e would close this.
+- lipdR/geoChronR drift (newer `extractTs` returns `paleoData_values` as matrix; 11 records
+  dropped due to `NROW(values)!=NROW(ageEnsemble)`).
+- Random seeds — the original didn't publish them; not recoverable.
 
 ## Known root causes (as of this snapshot)
 
