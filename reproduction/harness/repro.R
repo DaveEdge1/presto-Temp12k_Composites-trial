@@ -172,7 +172,12 @@ one_member_scc <- function(m) {
         s <- tapply(vok, bi, mean, na.rm = TRUE)
         out[as.integer(names(s))] <- as.numeric(s)
       }
-      out
+      # PER-RECORD anomaly relative to 3-5 ka (SCC_GMST_122719.m: normStart=3000,
+      # normEnd=5000 subtracted per RECORD before gridding). Records without
+      # 3-5 ka coverage can't be anomalised and are dropped.
+      ref_vals <- out[binAges >= 3000 & binAges <= 5000]
+      ref_vals <- ref_vals[is.finite(ref_vals)]
+      if (length(ref_vals) >= 2) out - mean(ref_vals) else rep(NA_real_, length(binAges))
     }, numeric(length(binAges)))
     if (is.null(dim(bm))) bm <- matrix(bm, ncol = length(fi))
     bm[!is.finite(bm)] <- NA
@@ -182,11 +187,6 @@ one_member_scc <- function(m) {
     fin <- is.finite(bm); bm0 <- bm; bm0[!fin] <- 0
     sums <- rowsum(t(bm0), group = cb); cnts <- rowsum(t(fin) * 1.0, group = cb)
     cellMat <- t(sums / cnts); cellMat[!is.finite(cellMat)] <- NA
-    cellMat <- tryCatch(
-      standardizeOverInterval(ages = binAges, pdm = cellMat,
-                              interval = c(3000, 5000), normalizeVariance = FALSE),
-      error = function(e) cellMat)
-    cellMat[!is.finite(cellMat)] <- NA
     bandMat[, b] <- rowMeans(cellMat, na.rm = TRUE)
   }
   bandMat
