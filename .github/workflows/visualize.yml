@@ -274,6 +274,17 @@ jobs:
           name: static-viz-${{ github.run_number }}
           path: ./visualization-output
 
+      - name: Download reconstruction data (for validation page)
+        # inspect-output re-uploaded the full reconstruction artifact under
+        # this stable name; it carries the validation/ report written by the
+        # container's combine stage (validate.py). Best-effort — older or
+        # validation-less runs simply won't have it.
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: recon-data-for-viz-${{ github.run_number }}
+          path: ./recon-data
+
       - name: Prepare Pages content
         run: |
           # presto-viz delivers a `viz/` subdir; rename to `docs/` to
@@ -284,16 +295,75 @@ jobs:
           fi
           find ./visualization-output -type f -name "*.zip" -delete
 
-          # If presto-viz path: synthesize the same tile-style landing
-          # page (otherwise users land on raw visualizer.html). On
-          # static path, index.html is already present.
+          # Surface the validation report (validation/index.html + figures)
+          # alongside the visualizer so the landing page can link to it.
+          if [ -d ./recon-data/validation ]; then
+            mkdir -p ./visualization-output/validation
+            cp -r ./recon-data/validation/. ./visualization-output/validation/
+          fi
+
+          # Tile icons (committed to the repo).
+          mkdir -p ./visualization-output/images
+          cp images/visualization.png images/validation.png ./visualization-output/images/ 2>/dev/null || true
+
+          # Spatial (presto-viz) path has no index.html yet. Build a
+          # tile-style landing page — a Reconstruction Validation tile
+          # (when the report exists) plus a Visualize Results tile —
+          # modeled on holocene_da, instead of bouncing straight to the
+          # raw visualizer.html. The static path keeps its own index.html.
           if [ ! -f ./visualization-output/index.html ]; then
-            mkdir -p ./visualization-output/images
-            cp images/visualization.png images/validation.png ./visualization-output/images/ 2>/dev/null || true
-            cat > ./visualization-output/index.html << 'HTMLEOF'
-          <!DOCTYPE html><html><head><meta charset="utf-8"><title>Reconstruction — PReSto</title>
-          <meta http-equiv="refresh" content="0; url=docs/visualizer.html"></head>
-          <body>Redirecting to <a href="docs/visualizer.html">visualizer</a>…</body></html>
+            VALIDATION_TILE=""
+            if [ -f ./visualization-output/validation/index.html ]; then
+              VALIDATION_TILE='<a class="tile" href="validation/index.html"><img src="images/validation.png" alt="Reconstruction Validation"><span>Reconstruction Validation</span></a>'
+            fi
+            VIZ_TILE=""
+            if [ -f ./visualization-output/docs/visualizer.html ]; then
+              VIZ_TILE='<a class="tile" href="docs/visualizer.html"><img src="images/visualization.png" alt="Visualize Results"><span>Visualize Results</span></a>'
+            fi
+            cat > ./visualization-output/index.html << HTMLEOF
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Temperature 12k Composites — PReSto</title>
+            <style>
+              :root { --bg:#f7f8fa; --fg:#1a1a1a; --accent:#2563eb; --tile-bg:#fff;
+                      --tile-shadow:0 2px 8px rgba(0,0,0,0.08);
+                      --tile-shadow-hover:0 6px 18px rgba(0,0,0,0.14); }
+              * { box-sizing:border-box; }
+              body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+                     background:var(--bg); color:var(--fg); margin:0; min-height:100vh;
+                     display:flex; flex-direction:column; }
+              header { text-align:center; padding:48px 24px 24px; }
+              header h1 { margin:0; font-size:2rem; font-weight:600; }
+              main { flex:1; display:flex; justify-content:center; align-items:center; padding:24px; }
+              .tiles { display:flex; flex-wrap:wrap; gap:32px; justify-content:center; }
+              .tile { display:flex; flex-direction:column; align-items:center; justify-content:flex-start;
+                      width:clamp(240px,32vw,480px); padding:clamp(20px,2.5vw,40px);
+                      background:var(--tile-bg); border-radius:12px; box-shadow:var(--tile-shadow);
+                      text-decoration:none; color:var(--fg);
+                      transition:transform .15s ease, box-shadow .15s ease; }
+              .tile:hover { transform:translateY(-3px); box-shadow:var(--tile-shadow-hover); }
+              .tile img { width:100%; height:clamp(160px,22vw,360px); object-fit:contain; margin-bottom:20px; }
+              .tile span { font-size:clamp(1.1rem,1.6vw,1.5rem); font-weight:500; color:var(--accent); text-align:center; }
+              footer { text-align:center; padding:32px 24px 40px; color:#666; }
+            </style>
+          </head>
+          <body>
+            <header>
+              <h1>Temperature 12k Composites — PReSto</h1>
+              <p>Generated from <a href="https://github.com/${{ github.repository }}">${{ github.repository }}</a></p>
+            </header>
+            <main>
+              <div class="tiles">
+                ${VALIDATION_TILE}
+                ${VIZ_TILE}
+              </div>
+            </main>
+            <footer><small>Generated by <a href="https://paleopresto.com">PReSto</a></small></footer>
+          </body>
+          </html>
           HTMLEOF
           fi
 
