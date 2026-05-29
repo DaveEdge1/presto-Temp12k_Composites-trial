@@ -1,0 +1,44 @@
+{
+  "scc": {
+    "midHolocene_mine": 0.604,
+    "table1": 0.5,
+    "pearson_r": 0.9911,
+    "coef_efficiency": 0.978,
+    "n_points": 121
+  },
+  "dcc": {
+    "midHolocene_mine": 0.556,
+    "table1": 0.5,
+    "pearson_r": 0.9975,
+    "coef_efficiency": 0.9896,
+    "n_points": 121
+  },
+  "gam": {
+    "midHolocene_mine": 0.527,
+    "table1": 0.44,
+    "pearson_r": 0.9694,
+    "coef_efficiency": 0.9346,
+    "n_points": 119
+  },
+  "cps": {
+    "midHolocene_mine": 1.295,
+    "table1": 1.08,
+    "pearson_r": 0.9964,
+    "coef_efficiency": 0.9913,
+    "n_points": 121
+  },
+  "paico": {
+    "midHolocene_mine": 0.536,
+    "table1": 0.42,
+    "pearson_r": 0.9981,
+    "coef_efficiency": 0.9128,
+    "n_points": 121
+  },
+  "consensus": {
+    "midHolocene_mine": 0.575,
+    "midHolocene_published": 0.505,
+    "pearson_r": 0.998,
+    "coef_efficiency": 0.993,
+    "n_points": 121
+  }
+}

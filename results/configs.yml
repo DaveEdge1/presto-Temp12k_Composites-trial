@@ -1,0 +1,35 @@
+presto_config:
+  advanced.cps_duration:
+    value: '3000'
+  advanced.cps_scale_window:
+    value: '[0, 1000]'
+  advanced.dcc_duration:
+    value: '3000'
+  advanced.gam_spline_k:
+    value: '25'
+  advanced.paico_reg_param:
+    value: '1.0'
+  bin.end_bp:
+    value: '12050'
+  bin.start_bp:
+    value: '-50'
+  bin.step:
+    value: '100'
+  methods.cps:
+    value: 'True'
+  methods.dcc:
+    value: 'True'
+  methods.gam:
+    value: 'True'
+  methods.paico:
+    value: 'True'
+  methods.scc:
+    value: 'True'
+  ncores:
+    value: '2'
+  nens:
+    value: '50'
+  reference_period.end:
+    value: '1900'
+  reference_period.start:
+    value: '1800'

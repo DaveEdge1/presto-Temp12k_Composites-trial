@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Temperature 12k Validation</title>
+  <style>
+    :root { --accent: #4682b4; --bg: #f7f8fa; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+           max-width: 1100px; margin: 0 auto; padding: 24px; color: #1a1a1a;
+           background: var(--bg); }
+    h1 { border-bottom: 3px solid var(--accent); padding-bottom: 12px; font-size: 1.8rem; }
+    h2 { color: #374151; margin-top: 36px; font-size: 1.3rem;
+          border-left: 4px solid var(--accent); padding-left: 12px; }
+    p { line-height: 1.6; color: #4b5563; }
+    table { border-collapse: collapse; margin: 16px 0; width: 100%;
+             background: white; border-radius: 8px; overflow: hidden;
+             box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+    th, td { border: 1px solid #e5e7eb; padding: 10px 16px; text-align: left; }
+    th { background: #f3f4f6; font-weight: 600; font-size: 0.9rem;
+          text-transform: uppercase; letter-spacing: 0.03em; color: #6b7280; }
+    img { max-width: 100%; margin: 12px 0; border: 1px solid #e5e7eb;
+           border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+    .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                    gap: 16px; margin: 16px 0; }
+    .metric-card { background: white; padding: 20px; border-radius: 8px;
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.08); text-align: center; }
+    .metric-card .value { font-size: 2rem; font-weight: 700; color: var(--accent); }
+    .metric-card .label { font-size: 0.85rem; color: #6b7280; margin-top: 4px; }
+    .back { margin-top: 32px; }
+    code { background: #eef1f4; padding: 1px 6px; border-radius: 3px; font-size: 0.9em; }
+    .note { font-size: 0.85rem; color: #6b7280; }
+  </style>
+</head>
+<body>
+  <h1>Temperature 12k Validation Report</h1>
+  <p>Validation of this multi-method composite reconstruction against the
+     <strong>published Kaufman et al. (2020) Temperature 12k</strong> curves
+     (<a href="https://doi.org/10.1038/s41597-020-0530-7">doi:10.1038/s41597-020-0530-7</a>),
+     bundled from the NOAA archive under <code>reference_data/published/</code>.
+     Pearson correlation (R) and the Nash–Sutcliffe coefficient of efficiency (CE)
+     are computed on full-record-centred anomalies (so the reference-period
+     convention cancels) of the ensemble-median GMST. CE = 1 is perfect;
+     CE = 0 equals climatology; CE &lt; 0 is worse than climatology.</p>
+
+  <div class="metric-grid">
+    <div class="metric-card">
+      <div class="value">0.998</div>
+      <div class="label">Consensus GMST R vs published</div>
+    </div>
+    <div class="metric-card">
+      <div class="value">0.993</div>
+      <div class="label">Consensus GMST CE vs published</div>
+    </div>
+    <div class="metric-card">
+      <div class="value">0.575 °C</div>
+      <div class="label">Consensus mid-Holocene ΔT (6.5–5.5 ka)</div>
+    </div>
+    <div class="metric-card">
+      <div class="value">0.991</div>
+      <div class="label">SCC GMST R vs published</div>
+    </div>
+    <div class="metric-card">
+      <div class="value">0.998</div>
+      <div class="label">DCC GMST R vs published</div>
+    </div>
+    <div class="metric-card">
+      <div class="value">0.969</div>
+      <div class="label">GAM GMST R vs published</div>
+    </div>
+    <div class="metric-card">
+      <div class="value">0.996</div>
+      <div class="label">CPS GMST R vs published</div>
+    </div>
+    <div class="metric-card">
+      <div class="value">0.998</div>
+      <div class="label">PaiCo GMST R vs published</div>
+    </div>
+  </div>
+
+  <h2>GMST Validation Metrics</h2>
+  <p>Per-method and consensus global-mean surface temperature against the
+     published Temp12k curves over their common age range
+     (0–12,000 yr BP). The mid-Holocene column is the
+     mean anomaly over 6.5–5.5 ka.</p>
+  <table>
+    <tr><th>Method</th><th>n pts</th><th>mid-Holocene (mine)</th>
+        <th>mid-Holocene (published)</th><th>Pearson R</th><th>CE</th></tr>
+    <tr>
+      <td>SCC</td>
+      <td>121</td>
+      <td>0.604 °C</td>
+      <td>0.500 * °C</td>
+      <td>0.9911</td>
+      <td style="color:#16a34a; font-weight:600;">0.9780</td>
+    </tr>
+    <tr>
+      <td>DCC</td>
+      <td>121</td>
+      <td>0.556 °C</td>
+      <td>0.500 * °C</td>
+      <td>0.9975</td>
+      <td style="color:#16a34a; font-weight:600;">0.9896</td>
+    </tr>
+    <tr>
+      <td>GAM</td>
+      <td>119</td>
+      <td>0.527 °C</td>
+      <td>0.440 * °C</td>
+      <td>0.9694</td>
+      <td style="color:#16a34a; font-weight:600;">0.9346</td>
+    </tr>
+    <tr>
+      <td>CPS</td>
+      <td>121</td>
+      <td>1.295 °C</td>
+      <td>1.080 * °C</td>
+      <td>0.9964</td>
+      <td style="color:#16a34a; font-weight:600;">0.9913</td>
+    </tr>
+    <tr>
+      <td>PaiCo</td>
+      <td>121</td>
+      <td>0.536 °C</td>
+      <td>0.420 * °C</td>
+      <td>0.9981</td>
+      <td style="color:#16a34a; font-weight:600;">0.9128</td>
+    </tr>
+    <tr>
+      <td>Consensus</td>
+      <td>121</td>
+      <td>0.575 °C</td>
+      <td>0.505 °C</td>
+      <td>0.9980</td>
+      <td style="color:#16a34a; font-weight:600;">0.9930</td>
+    </tr>
+  </table>
+  <p class="note">* where no published mid-Holocene value is bundled, the
+     paper's Table 1 value is shown for reference.</p>
+
+  <h2>GMST Time Series: Reconstruction vs Published</h2>
+  <p>Per-method (coloured) and consensus (black) reconstruction medians (solid)
+     overlaid on the published Temp12k curves (dotted). The shaded band is the
+     consensus 5–95% ensemble spread. X-axis runs from the oldest age (left)
+     to present (right).</p>
+  <img src="gmst_validation.png" alt="GMST reconstruction vs published">
+
+  <p class="note">Pooled multi-method ensemble: 250 members.</p>
+  <p class="back"><a href="../index.html">&larr; Back to results</a></p>
+</body>
+</html>
