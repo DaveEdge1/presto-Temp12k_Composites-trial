@@ -55,13 +55,23 @@ if (file.exists(slim)) {
 
   season <- tolower(vapply(TS, function(t) as.character(t[["interpretation1_seasonalityGeneral"]] %||% NA)[1], character(1)))
   units  <- tolower(vapply(TS, function(t) as.character(t[["paleoData_units"]] %||% NA)[1], character(1)))
-  inEns  <- vapply(TS, function(t) any(tolower(as.character(unlist(t[["paleoData_inCompilation"]]))) == "temp12kensemble"), logical(1))
+  # Per-method inCompilation tag (the published drivers differ!):
+  #   SCC, GAM use "Temp12k" (case-sensitive exact match, broader set ~1318 records)
+  #   DCC, CPS, PaiCo use "temp12kEnsemble" (the ensemble subset, ~1327 records)
+  if (METHOD %in% c("scc", "gam")) {
+    in_tag <- vapply(TS, function(t) any(as.character(unlist(t[["paleoData_inCompilation"]])) == "Temp12k"), logical(1))
+    tag_label <- "Temp12k"
+  } else {                                          # dcc, cps, paico
+    in_tag <- vapply(TS, function(t) any(tolower(as.character(unlist(t[["paleoData_inCompilation"]]))) == "temp12kensemble"), logical(1))
+    tag_label <- "temp12kEnsemble"
+  }
 
   degc_methods <- c("dcc", "scc", "cps")           # composite methods need degC
-  keep <- inEns & season %in% c("annual", "summeronly", "winteronly") &
+  keep <- in_tag & season %in% c("annual", "summeronly", "winteronly") &
           (units == "degc" | !(METHOD %in% degc_methods))
-  cat(sprintf("[repro] filter: temp12kEnsemble=%d, +season=%d, +degC=%d -> KEEP %d records\n",
-              sum(inEns), sum(inEns & season %in% c("annual","summeronly","winteronly")),
+  cat(sprintf("[repro] filter: %s=%d, +season=%d, +degC=%d -> KEEP %d records\n",
+              tag_label, sum(in_tag),
+              sum(in_tag & season %in% c("annual","summeronly","winteronly")),
               sum(keep & units == "degc"), sum(keep)))
   fTS <- TS[which(keep)]
 
@@ -149,6 +159,7 @@ one_member_compose <- function(m) {
 # Pipeline: bin -> equal-area grid -> per-cell anomaly vs 3-5 ka -> mean cells per band.
 one_member_scc <- function(m) {
   nb_edges <- length(binvec)
+  is_first <- (m == 1)              # SCC_GMST_122719.m line 118: ii==1 is unperturbed baseline
   bandMat <- matrix(NA_real_, nrow = length(binAges), ncol = N_BANDS)
   for (b in seq_len(N_BANDS)) {
     fi <- which(lat > LATBINS[b] & lat <= LATBINS[b + 1])
@@ -160,8 +171,13 @@ one_member_scc <- function(m) {
       val_rep <- if (is.matrix(v) && NCOL(v) > 1) apply(v, 1, median, na.rm = TRUE) else as.numeric(v)
       unc <- as.numeric(t$paleoData_uncertainty1sd %||% 1.5)
       if (length(age_rep) != length(val_rep)) return(rep(NA_real_, length(binAges)))
-      this_age <- age_rep * rnorm(1, mean = 1, sd = 0.05)
-      this_val <- val_rep + rnorm(length(val_rep), mean = 0, sd = unc)
+      if (is_first) {
+        this_age <- age_rep
+        this_val <- val_rep
+      } else {
+        this_age <- age_rep * rnorm(1, mean = 1, sd = 0.05)
+        this_val <- val_rep + rnorm(length(val_rep), mean = 0, sd = unc)
+      }
       ok <- is.finite(this_age) & is.finite(this_val) &
             this_age >= binvec[1] & this_age <= binvec[nb_edges]
       out <- rep(NA_real_, length(binAges))
