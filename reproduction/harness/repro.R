@@ -53,8 +53,16 @@ if (file.exists(slim)) {
   }
   cat("[repro] total TS columns:", length(TS), "\n")
 
-  season <- tolower(vapply(TS, function(t) as.character(t[["interpretation1_seasonalityGeneral"]] %||% NA)[1], character(1)))
+  season_raw <- vapply(TS, function(t) as.character(t[["interpretation1_seasonalityGeneral"]] %||% NA)[1], character(1))
   units  <- tolower(vapply(TS, function(t) as.character(t[["paleoData_units"]] %||% NA)[1], character(1)))
+  # SCC.m / DCC.R semantics: strncmpi("annual",.,7) | strncmp("summerOnly",.,7) | strncmp("winterOnly",.,7).
+  # strncmp with n=7 over 'annual' (len 6) requires exact equality (case-insensitive).
+  # strncmp with n=7 over 'summerOnly'/'winterOnly' (len 10) requires the first 7 chars to match.
+  match_season <- function(s) {
+    if (is.na(s)) return(FALSE)
+    tolower(s) == "annual" || startsWith(s, "summerO") || startsWith(s, "winterO")
+  }
+  season_ok <- vapply(season_raw, match_season, logical(1))
   # Per-method inCompilation tag (the published drivers differ!):
   #   SCC, GAM use "Temp12k" (case-sensitive exact match, broader set ~1318 records)
   #   DCC, CPS, PaiCo use "temp12kEnsemble" (the ensemble subset, ~1327 records)
@@ -67,11 +75,11 @@ if (file.exists(slim)) {
   }
 
   degc_methods <- c("dcc", "scc", "cps")           # composite methods need degC
-  keep <- in_tag & season %in% c("annual", "summeronly", "winteronly") &
+  keep <- in_tag & season_ok &
           (units == "degc" | !(METHOD %in% degc_methods))
   cat(sprintf("[repro] filter: %s=%d, +season=%d, +degC=%d -> KEEP %d records\n",
               tag_label, sum(in_tag),
-              sum(in_tag & season %in% c("annual","summeronly","winteronly")),
+              sum(in_tag & season_ok),
               sum(keep & units == "degc"), sum(keep)))
   fTS <- TS[which(keep)]
 
@@ -136,7 +144,7 @@ stan_args <- switch(METHOD,
 one_member_compose <- function(m) {
   bandMat <- matrix(NA_real_, nrow = length(binAges), ncol = N_BANDS)
   for (b in seq_len(N_BANDS)) {
-    fi <- which(lat > LATBINS[b] & lat <= LATBINS[b + 1])
+    fi <- which(lat > LATBINS[b] & lat < LATBINS[b + 1])     # SCC.m/DCC.R: strict on both edges
     if (length(fi) < 2) next
     tc <- tryCatch(
       do.call(compositeEnsembles, c(list(fTS = fTS[fi], binvec = binvec, spread = TRUE,
@@ -162,7 +170,7 @@ one_member_scc <- function(m) {
   is_first <- (m == 1)              # SCC_GMST_122719.m line 118: ii==1 is unperturbed baseline
   bandMat <- matrix(NA_real_, nrow = length(binAges), ncol = N_BANDS)
   for (b in seq_len(N_BANDS)) {
-    fi <- which(lat > LATBINS[b] & lat <= LATBINS[b + 1])
+    fi <- which(lat > LATBINS[b] & lat < LATBINS[b + 1])     # SCC.m/DCC.R: strict on both edges
     if (length(fi) < 2) next
     bm <- vapply(fTS[fi], function(t) {
       ae <- t$ageEnsemble
@@ -188,12 +196,13 @@ one_member_scc <- function(m) {
         s <- tapply(vok, bi, mean, na.rm = TRUE)
         out[as.integer(names(s))] <- as.numeric(s)
       }
-      # PER-RECORD anomaly relative to 3-5 ka (SCC_GMST_122719.m: normStart=3000,
-      # normEnd=5000 subtracted per RECORD before gridding). Records without
-      # 3-5 ka coverage can't be anomalised and are dropped.
-      ref_vals <- out[binAges >= 3000 & binAges <= 5000]
+      # PER-RECORD anomaly relative to 3-5 ka (SCC_GMST_122719.m line 142, 167:
+      # `binMid > normStart & binMid < normEnd` -- STRICT inequality on both ends,
+      # so bin centers at 3000 and 5000 are EXCLUDED). MATLAB's nanmean keeps
+      # records with >=1 finite ref bin (returns NaN only when all NaN).
+      ref_vals <- out[binAges > 3000 & binAges < 5000]
       ref_vals <- ref_vals[is.finite(ref_vals)]
-      if (length(ref_vals) >= 2) out - mean(ref_vals) else rep(NA_real_, length(binAges))
+      if (length(ref_vals) >= 1) out - mean(ref_vals) else rep(NA_real_, length(binAges))
     }, numeric(length(binAges)))
     if (is.null(dim(bm))) bm <- matrix(bm, ncol = length(fi))
     bm[!is.finite(bm)] <- NA
@@ -224,11 +233,13 @@ cat(sprintf("[repro] composited in %.1f min\n", as.numeric(difftime(Sys.time(), 
 nb <- length(binAges)
 cols <- lapply(cols, function(mm) if (is.matrix(mm) && all(dim(mm) == c(nb, N_BANDS))) mm else matrix(NA_real_, nb, N_BANDS))
 
-# area-weight bands -> global per member (renormalize over bands with data)
+# area-weight bands -> global per member. SCC.m and DCC.R use a PLAIN sum
+# (NaN-propagating): if any band is NaN at a bin, the global is NaN there.
+# Renormalizing over present bands would warm-bias the global mean when the
+# southern high-latitude band is missing.
 area_weight <- function(mm) {
-  w <- matrix(ZONAL_W, nrow = nb, ncol = N_BANDS, byrow = TRUE); w[!is.finite(mm)] <- NA
-  num <- rowSums(mm * w, na.rm = TRUE); den <- rowSums(w, na.rm = TRUE)
-  out <- num / den; out[den == 0] <- NA; out
+  w <- matrix(ZONAL_W, nrow = nb, ncol = N_BANDS, byrow = TRUE)
+  rowSums(mm * w)
 }
 glob <- vapply(cols, area_weight, numeric(nb))      # nb x nens
 
