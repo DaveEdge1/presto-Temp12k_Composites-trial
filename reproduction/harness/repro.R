@@ -141,18 +141,38 @@ stan_args <- switch(METHOD,
   stop("method not yet wired in harness: ", METHOD))
 
 # DCC/CPS one_member: compositeEnsembles via the authors' engine.
+# MEMBER-LEVEL RETRY: standardizeMeanIteratively throws "No good columns after
+# standardization" when its random 3000-yr-window in [0,7000] drops too many
+# records (esp. the southern band, ~12 records). Band-level retry isn't enough --
+# some draws are dead-ends. So if ANY band fails after band-level retries,
+# re-draw the whole member. This matches what the published authors plausibly
+# did (DCC.R uses foreach without tryCatch; failed iterations had to be
+# regenerated). Without this, ~25% of members are fully-NaN and the survivors
+# are selection-biased -> +0.03 mid-Hol warm + -0.06 12 ka cold.
 one_member_compose <- function(m) {
-  bandMat <- matrix(NA_real_, nrow = length(binAges), ncol = N_BANDS)
-  for (b in seq_len(N_BANDS)) {
-    fi <- which(lat > LATBINS[b] & lat < LATBINS[b + 1])     # SCC.m/DCC.R: strict on both edges
-    if (length(fi) < 2) next
-    tc <- tryCatch(
-      do.call(compositeEnsembles, c(list(fTS = fTS[fi], binvec = binvec, spread = TRUE,
-              gaussianizeInput = FALSE, ageVar = "ageEnsemble", alignInterpDirection = FALSE), stan_args)),
-      error = function(e) { message("band ", b, " err: ", conditionMessage(e)); NULL })
-    if (!is.null(tc) && !is.null(tc$composite)) bandMat[, b] <- tc$composite
+  required_bands <- seq_len(N_BANDS)[vapply(seq_len(N_BANDS),
+    function(b) sum(lat > LATBINS[b] & lat < LATBINS[b + 1]) >= 2, logical(1))]
+  for (member_try in seq_len(10)) {
+    bandMat <- matrix(NA_real_, nrow = length(binAges), ncol = N_BANDS)
+    success <- TRUE
+    for (b in required_bands) {
+      fi <- which(lat > LATBINS[b] & lat < LATBINS[b + 1])
+      tc <- NULL
+      for (band_retry in seq_len(15)) {
+        tc <- tryCatch(
+          do.call(compositeEnsembles, c(list(fTS = fTS[fi], binvec = binvec, spread = TRUE,
+                  gaussianizeInput = FALSE, ageVar = "ageEnsemble", alignInterpDirection = FALSE), stan_args)),
+          error = function(e) NULL)
+        if (!is.null(tc) && !is.null(tc$composite) && any(is.finite(tc$composite))) break
+      }
+      if (is.null(tc) || is.null(tc$composite) || !any(is.finite(tc$composite))) {
+        success <- FALSE; break
+      }
+      bandMat[, b] <- tc$composite
+    }
+    if (success) return(bandMat)
   }
-  bandMat
+  bandMat                                     # fallback: return what we got
 }
 
 # SCC one_member -- FAITHFUL TO THE PUBLISHED UNCERTAINTY MODEL.
