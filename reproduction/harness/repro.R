@@ -203,7 +203,11 @@ one_member_scc <- function(m) {
     fin <- is.finite(bm); bm0 <- bm; bm0[!fin] <- 0
     sums <- rowsum(t(bm0), group = cb); cnts <- rowsum(t(fin) * 1.0, group = cb)
     cellMat <- t(sums / cnts); cellMat[!is.finite(cellMat)] <- NA
-    bandMat[, b] <- rowMeans(cellMat, na.rm = TRUE)
+    # SCC's gridMat.m line: `totalMedian = nanmedian(gridMean, 2)` -- cross-cell
+    # MEDIAN, not mean. The per-cell 6 ka anomaly distribution is right-skewed
+    # (high-lat land outliers), so mean overshoots median by exactly the +0.05
+    # magnitude we were seeing -- stable across ensemble members.
+    bandMat[, b] <- apply(cellMat, 1, median, na.rm = TRUE)
   }
   bandMat
 }
