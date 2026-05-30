@@ -83,11 +83,61 @@ if (file.exists(slim)) {
               sum(keep & units == "degc"), sum(keep)))
   fTS <- TS[which(keep)]
 
+  # ---- chronModel ensemble repair ----------------------------------------------
+  # The newer lipdR's extractTs attaches the measurement-table ageEnsemble to
+  # records whose values actually live in a paleoModel/ensembleTable -- e.g.
+  # MD97-2120 has three SST ensemble columns at 1779 rows in
+  # paleo1model1ensemble1.csv, but extractTs gives them the 720-row
+  # measurement-table ageEnsemble (a mis-pairing). The CORRECT ageEnsemble for
+  # these records is in chron1model1ensemble1.csv (1779 rows x 1000 members).
+  # Without this fix the records get dropped by the NROW filter below and the
+  # deglacial 12 ka is +0.07 cold-biased because those records are marine SST
+  # proxies showing deglacial WARMING.
+  lpd_dir <- LPDDIR
+  chron_cache <- new.env(parent = emptyenv())
+  load_chron_ensemble <- function(dsname) {
+    if (exists(dsname, envir = chron_cache, inherits = FALSE)) return(get(dsname, envir = chron_cache))
+    lpd_path <- file.path(lpd_dir, paste0(dsname, ".lpd"))
+    if (!file.exists(lpd_path)) { assign(dsname, NULL, envir = chron_cache); return(NULL) }
+    tmp <- tempfile(); dir.create(tmp); on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
+    csvs <- tryCatch(suppressWarnings({
+      unzip(lpd_path, exdir = tmp)
+      list.files(tmp, pattern = "chron[0-9]+model[0-9]+ensemble[0-9]+\\.csv$",
+                 recursive = TRUE, full.names = TRUE)
+    }), error = function(e) character(0))
+    if (length(csvs) == 0) { assign(dsname, NULL, envir = chron_cache); return(NULL) }
+    # The chronModel ensemble CSVs in lipdFilesWithEnsembles have NO header
+    # row (first line is data); first column = depth, rest = age realizations.
+    d <- tryCatch(read.csv(csvs[1], header = FALSE, check.names = FALSE),
+                  error = function(e) NULL)
+    if (is.null(d) || ncol(d) < 2) { assign(dsname, NULL, envir = chron_cache); return(NULL) }
+    # First column is depth (or another non-member field); the remaining columns
+    # are the age ensemble realizations. Coerce to numeric matrix.
+    ens <- suppressWarnings(as.matrix(d[, -1, drop = FALSE]))
+    mode(ens) <- "numeric"
+    assign(dsname, ens, envir = chron_cache); ens
+  }
+  n_repaired <- 0
+  apply_chron_repair <- nzchar(Sys.getenv("PRESTO_CHRON_REPAIR", "1")) &&
+                        Sys.getenv("PRESTO_CHRON_REPAIR", "1") != "0"
+  for (k in if (apply_chron_repair) seq_along(fTS) else integer(0)) {
+    v <- fTS[[k]]$paleoData_values; ae <- fTS[[k]]$ageEnsemble
+    if (is.null(ae) || NROW(as.matrix(v)) == NROW(as.matrix(ae))) next
+    dsname <- as.character(fTS[[k]]$dataSetName)
+    if (!nzchar(dsname)) next
+    new_ae <- load_chron_ensemble(dsname)
+    if (!is.null(new_ae) && NROW(new_ae) == NROW(as.matrix(v))) {
+      fTS[[k]]$ageEnsemble <- new_ae
+      n_repaired <- n_repaired + 1
+    }
+  }
+  cat(sprintf("[repro] chronModel ensemble repair: re-paired ageEnsemble for %d records\n", n_repaired))
+
   # Newer lipdR/geoChronR returns paleoData_values as a value-ensemble matrix and,
   # for a few records, maps the ageEnsemble onto a different-length axis than the
   # values (e.g. val 81 obs vs ageEnsemble 41). compositeEnsembles draws one column
   # from each and requires NROW(values)==NROW(ageEnsemble); one mismatched record
-  # aborts the whole band. Drop those inconsistent records.
+  # aborts the whole band. Drop those that remain inconsistent after the repair.
   good <- vapply(fTS, function(t) {
     v <- t$paleoData_values; ae <- t[["ageEnsemble"]]
     !is.null(ae) && NROW(as.matrix(v)) == NROW(as.matrix(ae)) && NROW(as.matrix(ae)) >= 4
@@ -253,10 +303,9 @@ cat(sprintf("[repro] composited in %.1f min\n", as.numeric(difftime(Sys.time(), 
 nb <- length(binAges)
 cols <- lapply(cols, function(mm) if (is.matrix(mm) && all(dim(mm) == c(nb, N_BANDS))) mm else matrix(NA_real_, nb, N_BANDS))
 
-# area-weight bands -> global per member. SCC.m and DCC.R use a PLAIN sum
-# (NaN-propagating): if any band is NaN at a bin, the global is NaN there.
-# Renormalizing over present bands would warm-bias the global mean when the
-# southern high-latitude band is missing.
+# Area-weight bands -> global per member. SCC.m and DCC.R both use a plain
+# NaN-propagating sum. Published archives have 0 NaN, meaning per-band
+# composites were fully finite in 2020.
 area_weight <- function(mm) {
   w <- matrix(ZONAL_W, nrow = nb, ncol = N_BANDS, byrow = TRUE)
   rowSums(mm * w)
