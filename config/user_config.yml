@@ -21,13 +21,14 @@ bin:
   end_bp:   12050   # oldest bin edge
   step:     100     # bin width (years)
 
-# ---- ensemble size (per method). Paper used 500. 100 is the practical default
-#      that keeps GAM faithful: GAM uses nens posterior draws per cell, and at
-#      n_draws=50 pygam's per-cell posterior sampler under-samples the tails,
-#      biasing the global composite warm by ~0.06 degC. n_draws=nens=100 matches
-#      the paper's "size flows through unchanged from cell -> band -> global"
-#      construction (no sub-sampling). Bump to 500 for full paper-faithful run.
-nens: 100
+# ---- ensemble size (per method). Paper used 500. Set to 500 (paper-faithful):
+#      at nens=100 the DCC composite median carries ~+-0.04 degC of Monte-Carlo
+#      scatter in its overall level (DCC's iterative mean-alignment standardization
+#      is the noisiest of the five methods), which surfaced as a ~+0.045 degC warm
+#      DCC on the diagnostics site. nens=500 averages it out (DCC bias +0.045 ->
+#      +0.011). Same under-sampling story as GAM (n_draws=nens). Drop to 100 for a
+#      ~5x-faster non-paper run (accept the DCC scatter).
+nens: 500
 
 # ---- parallel workers. CI runs each method as its own 2-core matrix job, so 2
 #      matches the runner; bump for a bigger machine (auto-detects if removed). ----
@@ -45,3 +46,7 @@ advanced:
   cps_scale_window: [0, 1000]     # CPS scaling window (yr BP; last millennium)
   gam_spline_k:     25            # GAM penalized B-spline basis dimension
   paico_reg_param:  1.0           # PaiCo regularization parameter
+  # member_ref_bp: [3000, 5000]   # per-member centering window (yr BP). Omitted
+                                  # => full-record mean, which reproduces the
+                                  # published uncertainty band best (DCC/CPS
+                                  # real-ensemble test). Uncomment to override.

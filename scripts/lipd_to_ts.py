@@ -101,10 +101,13 @@ def _build_value_ensemble(values, unc, rid):
     """Return a (n_samples x VALUE_ENSEMBLE_SIZE) list-of-lists: each column is the
     base value vector plus an independent AR1 noise realisation with sd=unc."""
     import numpy as _np
+    import zlib
     base = _np.asarray([float("nan") if v is None else float(v) for v in values],
                        dtype=float)
     n = base.size
-    rng = _np.random.default_rng(seed=abs(hash(rid)) & 0xFFFFFFFF)
+    # crc32 is stable across processes; builtin hash() of a str is salted per
+    # process (PYTHONHASHSEED), which silently made every run's ensembles differ
+    rng = _np.random.default_rng(seed=zlib.crc32(str(rid).encode("utf-8")))
     sd = float(unc) if unc is not None and _np.isfinite(unc) and unc > 0 else 0.0
     ens = _np.empty((n, VALUE_ENSEMBLE_SIZE), dtype=float)
     for k in range(VALUE_ENSEMBLE_SIZE):

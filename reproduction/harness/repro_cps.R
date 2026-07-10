@@ -69,7 +69,7 @@ load_cps_targets <- function(dir) {
 # `if (sys.nframe()==0 || identical(environment(), globalenv())) tryCatch(main(),...)`
 # that fires under source() and would read /results/proxy_ts.json (missing).
 # Strip that block before evaluating.
-src <- readLines("/app/scripts/run_methods.R")
+src <- readLines(getarg("--run-methods", "/app/scripts/run_methods.R"))
 # Drop the final block that calls main(). Find the line starting the if-block.
 drop_from <- which(grepl("^if\\s*\\(sys\\.nframe", src))
 if (length(drop_from)) src <- src[seq_len(drop_from[1] - 1L)]

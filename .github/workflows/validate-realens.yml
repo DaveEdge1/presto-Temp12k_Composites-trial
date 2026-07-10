@@ -1,0 +1,163 @@
+# Validate the REAL-ENSEMBLE reproduction in the container on native amd64.
+#
+# Unlike reconstruct.yml (which runs the legacy pickle path), this builds the
+# image WITH the real-ensemble bundle and runs each method with PRESTO_REALENS=1,
+# then scores the per-method global ensemble against the published Temp12k curves
+# (reproduction/ci/cmp.py) and checks two-run byte-determinism.
+#
+# Native amd64 runners avoid the two Apple-Silicon-emulation limits seen locally
+# (the GAM multiprocessing pool deadlock, and the 8 GB Docker OOM on DCC/CPS).
+#
+# The real-ensemble bundle (data/realens/*.rds, ~260 MB) is gitignored and built
+# from large local caches, so the runner fetches it from a GitHub release
+# (realens-bundle-v1.0.0) into data/realens/ before `docker build`.
+
+name: Validate real-ensemble reproduction
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [local/phase1-real-ensembles]
+    paths:
+      - '.github/workflows/validate-realens.yml'
+      - 'scripts/**'
+      - 'reference_data/**'
+      - 'entrypoint.sh'
+      - 'Dockerfile'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240   # nens=500 x2-determinism: PaiCo runs ~175 min and can cross 180
+                           # on a slow runner (run 28976558958 timed out at 180); 240 = headroom
+    strategy:
+      fail-fast: false
+      matrix:
+        method: [scc, dcc, gam, cps, paico]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch real-ensemble bundle from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p data/realens
+          gh release download realens-bundle-v1.0.0 \
+            --repo "${{ github.repository }}" \
+            --pattern 'ensemble_*.rds' --pattern 'singlevec.json' \
+            --dir data/realens/
+          ls -lh data/realens/
+
+      - name: Build container
+        run: docker build -t presto-temp12k:local .
+
+      - name: Run ${{ matrix.method }} (real ensembles) x2 for determinism
+        run: |
+          for run in 1 2; do
+            mkdir -p "results${run}"
+            docker run --rm \
+              -e PRESTO_REALENS=1 \
+              -e PRESTO_STAGE=methods \
+              -e PRESTO_ONLY_METHOD=${{ matrix.method }} \
+              -v "$(pwd)/config/user_config.yml:/app/config/user_config.yml:ro" \
+              -v "$(pwd)/results${run}:/results" \
+              presto-temp12k:local
+          done
+
+      - name: Score vs published + determinism
+        run: |
+          python3 -m pip install --quiet numpy
+          M=${{ matrix.method }}
+          CSV="results1/methods/${M}_global.csv"
+          if [ ! -f "$CSV" ]; then
+            echo "::error::${M}_global.csv not produced"; ls -lR results1 || true; exit 1
+          fi
+          echo "===== ${M} score vs published (real ensembles, in-container) ====="
+          python3 reproduction/ci/cmp.py --method "$M" --csv "$CSV" | tee score.txt
+          # Per-method maxD ceiling (real-ensemble in-container numbers + headroom
+          # for the 100-col subsample variation). A nan (e.g. all-NA composite)
+          # fails the v==v check.
+          case "$M" in
+            scc)   THRESH=0.16 ;;
+            dcc)   THRESH=0.16 ;;
+            gam)   THRESH=0.18 ;;
+            cps)   THRESH=0.22 ;;
+            paico) THRESH=0.12 ;;   # tightened after the window+multi-method-target fix (local 0.054)
+            *)     THRESH=0.25 ;;
+          esac
+          MAXD=$(awk '/^maxD/{print $2}' score.txt)
+          echo "${M}: maxD=${MAXD}, ceiling=${THRESH}"
+          python3 -c "import sys; v=float('${MAXD}'); sys.exit(0 if (v==v and v < ${THRESH}) else 1)" \
+            || { echo "::error::${M} maxD ${MAXD} exceeds ceiling ${THRESH} (or is nan)"; exit 1; }
+          echo "===== ${M} two-run byte-determinism ====="
+          if diff -q "results1/methods/${M}_global.csv" "results2/methods/${M}_global.csv"; then
+            echo "DETERMINISM: byte-identical across two runs ✓"
+          else
+            echo "::error::${M} not deterministic across two runs"; exit 1
+          fi
+
+      - name: Upload per-method ensemble
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: realens-${{ matrix.method }}-${{ github.run_id }}
+          path: results1/methods/${{ matrix.method }}_*.csv
+          retention-days: 7
+
+  # ── Combine the 5 real-ensemble methods into the consensus + diagnostics ──
+  # Runs the container's `combine` stage (consensus GMST + NetCDF + figures +
+  # validate.py's per-method/consensus report vs published) on the real-ensemble
+  # method ensembles, and publishes it as `realens-diagnostics-<run_id>` — which
+  # visualize.yml surfaces on the GitHub Pages site next to the pickle-path
+  # reconstruction ("in the same manner").
+  combine:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all real-ensemble per-method ensembles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: realens-*-${{ github.run_id }}
+          merge-multiple: true
+          path: ./results/methods
+
+      - name: List method ensembles
+        run: ls -lh ./results/methods/
+
+      - name: Build container
+        # The combine stage needs only scripts + reference_data + the method
+        # CSVs (not the ensemble bundle), so no release download here.
+        run: docker build -t presto-temp12k:local .
+
+      - name: Combine -> consensus + figures + validation report
+        run: |
+          docker run --rm \
+            -e PRESTO_STAGE=combine \
+            -v "$(pwd)/config/user_config.yml:/app/config/user_config.yml:ro" \
+            -v "$(pwd)/results:/results" \
+            presto-temp12k:local
+
+      - name: Verify diagnostics produced
+        run: |
+          if [ ! -f results/validation/index.html ]; then
+            echo "::error::real-ensemble validation report not produced"; ls -lR results || true; exit 1
+          fi
+          echo "=== consensus reconstruction + validation report ==="
+          ls -lh results/reconstruction.csv results/validation/ results/figures/ 2>/dev/null || true
+
+      - name: Upload real-ensemble diagnostics (for visualize.yml -> Pages)
+        uses: actions/upload-artifact@v4
+        with:
+          name: realens-diagnostics-${{ github.run_id }}
+          path: |
+            results/validation
+            results/figures
+            results/reconstruction.csv
+            results/reconstruction.nc
+          retention-days: 30

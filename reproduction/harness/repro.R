@@ -176,7 +176,8 @@ if (file.exists(slim)) {
 # ---- SCC equal-area gridding setup (per-cell cell-id, computed once) ------------
 cell <- NULL
 if (METHOD == "scc") {
-  g <- read.csv("/repro/equal_area_grid_centers.csv")
+  grid_csv <- getarg("--grid", "/repro/equal_area_grid_centers.csv")
+  g <- read.csv(grid_csv)
   rad <- pi / 180
   cell <- vapply(seq_along(lat), function(i) {
     if (!is.finite(lat[i]) || !is.finite(lon[i])) return(NA_integer_)
