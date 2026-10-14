@@ -36,10 +36,27 @@ fi
 if [ "$STAGE" = "full" ] || [ "$STAGE" = "methods" ]; then
   echo "[entrypoint] config in use:"; cat "$CONFIG_EFF"; echo "---"
 
-  echo "[entrypoint] Step: LiPD pickle -> proxy_ts.json"
-  UNC_ARG=""
-  [ -f "$REFDATA/proxy_uncertainties.yml" ] && UNC_ARG="--uncertainties $REFDATA/proxy_uncertainties.yml"
-  $PY /app/scripts/lipd_to_ts.py --pickle "$LIPD_PICKLE" --out-json "$OUT/proxy_ts.json" $UNC_ARG
+  # Data path: real-ensemble bundle (PRESTO_REALENS=1) reproduces the published
+  # per-record age+value ensembles from the bundled v1.0.0 artifact; otherwise
+  # the legacy pickle path (single-vector values + synthetic ensembles).
+  if [ "${PRESTO_REALENS:-0}" = "1" ]; then
+    echo "[entrypoint] Step: real-ensemble bundle -> proxy_ts.json (method=${ONLY:-all})"
+    # Run from / so the renv project at / activates (jsonlite lives in its
+    # library, same as the run_methods.R step below).
+    ( cd / && Rscript /app/scripts/prepare_realens.R \
+        --method "${ONLY:-dcc}" \
+        --bundle-dir "${PRESTO_REALENS_DIR:-/app/data/realens}" \
+        --out-json "$OUT/proxy_ts.json" )
+  else
+    echo "[entrypoint] Step: LiPD pickle -> proxy_ts.json"
+    UNC_ARG=""
+    [ -f "$REFDATA/proxy_uncertainties.yml" ] && UNC_ARG="--uncertainties $REFDATA/proxy_uncertainties.yml"
+    # A PReSto pool bundle was selected upstream by the Temperature 12k
+    # criteria, not by membership, so its records need not carry the tag.
+    ANY_ARG=""
+    [ "${PRESTO_ANY_COMPILATION:-0}" = "1" ] && ANY_ARG="--any-compilation"
+    $PY /app/scripts/lipd_to_ts.py --pickle "$LIPD_PICKLE" --out-json "$OUT/proxy_ts.json" $UNC_ARG $ANY_ARG
+  fi
 
   echo "[entrypoint] Step: R methods (SCC/DCC/CPS/PaiCo, per config)"
   ( cd / && Rscript /app/scripts/run_methods.R \

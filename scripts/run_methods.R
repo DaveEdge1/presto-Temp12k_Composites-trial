@@ -72,9 +72,19 @@ build_fts <- function(recs) {
       vals <- matrix(as.numeric(r$values), ncol = 1)
     }
     if (identical(tolower(r$direction), "negative")) vals <- vals * -1
+    # Real age ensemble (proxy_ts real-ensemble schema): jsonlite gives a list
+    # of row vectors -> rbind to a matrix. compositeR's NCOL>1 path then draws
+    # a real chronology per member (ageVar="ageEnsemble"). Absent => single
+    # median age vector + BAM (legacy pickle path).
+    ae <- r$age_ensemble
+    ageEns <- NULL
+    if (!is.null(ae) && length(ae) > 0) {
+      ageEns <- if (is.list(ae)) do.call(rbind, lapply(ae, as.numeric)) else as.matrix(ae)
+    }
     list(
       dataSetName = r$dataSetName,
       age = as.numeric(r$age),
+      ageEnsemble = ageEns,
       paleoData_values = vals,
       paleoData_uncertainty1sd = if (is.null(r$uncertainty1sd)) NA_real_ else as.numeric(r$uncertainty1sd),
       lat = as.numeric(r$lat),
@@ -145,7 +155,12 @@ band_composite <- function(recs, binvec, binAges, stanFun, stanArgs,
     cnts <- rowsum(t(fin) * 1.0, group = cg)
     cellMat <- t(sums / cnts)            # nbins x ncells; NaN where a cell empty
     cellMat[!is.finite(cellMat)] <- NA
-    comp <- rowMeans(cellMat, na.rm = TRUE)
+    # Cross-cell MEDIAN (SCC_GMST_122719.m gridMat.m: totalMedian =
+    # nanmedian(gridMean, 2)). The per-cell mid-Holocene anomaly distribution is
+    # right-skewed (high-latitude land outliers), so a cross-cell MEAN overshoots
+    # the median warm by ~+0.05-0.09 degC -- the SCC warm bias. Median matches
+    # the validated MATLAB->R port.
+    comp <- apply(cellMat, 1, median, na.rm = TRUE)
   } else {
     comp <- rowMeans(compMat, na.rm = TRUE)
   }
@@ -165,10 +180,29 @@ area_weight <- function(bandMat) {           # bandMat: nbins x 6
   out
 }
 
-# subtract each member's full-record mean, then align the ensemble median over
-# the reference period (1800-1900 CE -> ~50-150 yr BP) to zero (paper).
-apply_reference <- function(ens, binAges, ref_start_ce = 1800, ref_end_ce = 1900) {
-  ens <- sweep(ens, 2, colMeans(ens, na.rm = TRUE), "-")
+# Per-member centering, then align the ensemble median over the reference
+# period (1800-1900 CE -> ~50-150 yr BP) to zero (paper).
+#
+# member_ref_bp: per-member centering window in yr BP (c(lo,hi)). NULL (default)
+#   = subtract each member's FULL-record mean. Empirically (local Phase-1,
+#   DCC + CPS real-ensemble runs vs the NOAA published bands) full-record
+#   centering best reproduces the published uncertainty PROFILE
+#   (band-width profile-corr 0.86 DCC / 0.985 CPS) and mean spread ratio ~1.0.
+#   A mid-Holocene window (e.g. c(3000,5000), SCC's normStart/normEnd) was
+#   TESTED and is WORSE (corr 0.73 / 0.95): compositeEnsembles already aligns
+#   each RECORD over Holocene windows internally, so global-member full-mean
+#   removal is the right final step. Kept configurable for per-method override.
+apply_reference <- function(ens, binAges, ref_start_ce = 1800, ref_end_ce = 1900,
+                            member_ref_bp = NULL) {
+  if (is.null(member_ref_bp)) {
+    ctr <- colMeans(ens, na.rm = TRUE)                    # full-record mean (default, best)
+  } else {
+    wr <- which(binAges >= member_ref_bp[1] & binAges <= member_ref_bp[2])
+    ctr <- apply(ens[wr, , drop = FALSE], 2, mean, na.rm = TRUE)
+    full <- colMeans(ens, na.rm = TRUE)                   # fallback for members with no data in window
+    ctr[!is.finite(ctr)] <- full[!is.finite(ctr)]
+  }
+  ens <- sweep(ens, 2, ctr, "-")
   ref_bp <- c(1950 - ref_end_ce, 1950 - ref_start_ce)   # e.g. c(50,150)
   refrows <- which(binAges >= ref_bp[1] & binAges <= ref_bp[2])
   if (length(refrows) == 0) refrows <- which.min(abs(binAges - 100))
@@ -178,13 +212,38 @@ apply_reference <- function(ens, binAges, ref_start_ce = 1800, ref_end_ce = 1900
 
 # ---------------------------------------------------------------------------
 # Run one method across nens members; returns global ensemble (nbins x nens).
+# Members that failed (an error, a forked worker killed for memory, or an
+# all-NA result) come back as NA columns. Stop when more than max_failed_frac
+# of them (advanced.max_failed_frac, default 1%) failed, so a run that lost
+# most of its ensemble cannot pass as a result.
+check_members <- function(cols, nb, method, cfg) {
+  good <- vapply(cols, function(m) is.matrix(m) && all(dim(m) == c(nb, N_BANDS)) &&
+                   any(is.finite(m)), logical(1))
+  nfail <- sum(!good)
+  if (nfail > 0) {
+    err <- Filter(function(m) inherits(m, "try-error"), cols)
+    why <- if (length(err)) trimws(as.character(err[[1]])) else
+      "no result (worker killed, possibly out of memory) or all NA"
+    cat(sprintf("[run_methods] %s: %d of %d members failed; first: %s\n",
+                method, nfail, length(cols), why))
+    if (nfail > floor((cfg$max_failed_frac %||% 0.01) * length(cols)))
+      stop(sprintf("%s: %d of %d ensemble members failed (limit %.0f%%)", method, nfail,
+                   length(cols), 100 * (cfg$max_failed_frac %||% 0.01)), call. = FALSE)
+  }
+  invisible(nfail)
+}
+
 # ---------------------------------------------------------------------------
 run_method <- function(method, fts, bandIdx, gridIdx, binvec, binAges, nens,
                        cps_targets = NULL, cfg = list()) {
   degc_only <- method %in% c("scc", "dcc")
 
-  # method-specific standardization + binning settings
-  ageVar <- "age"   # default: use the per-record median age vector
+  # method-specific standardization + binning settings.
+  # ageVar: "age" (default, per-record median vector -> BAM ages simulated in
+  # sampleEnsembleThenBinTs) or "ageEnsemble" when records carry a real age
+  # ensemble matrix (compositeR's NCOL>1 path draws a real chronology per
+  # member). Set via cfg$age_var for the real-ensemble path (Phase-1 localrepro).
+  ageVar <- cfg$age_var %||% "age"
   if (method == "dcc") {
     # DCC.R: compositeEnsembles(..., duration=3000, searchRange=c(0,7000),
     #        normalizeVariance=FALSE) with default stan/bin funs.
@@ -208,7 +267,13 @@ run_method <- function(method, fts, bandIdx, gridIdx, binvec, binAges, nens,
     stop(paste("run_method: unknown method", method))
   }
 
+  # per-member, per-method RNG stream: deterministic regardless of core count
+  # or mclapply scheduling, so identical configs give identical output (paired
+  # A/B comparisons; gam_method.py is already seeded the same way)
+  moff <- match(method, c("dcc", "scc", "cps"))
+
   one_member <- function(i) {
+    if (!is.null(cfg$seed)) set.seed(cfg$seed + moff * 1000000L + i)
     bandMat <- matrix(NA_real_, nrow = length(binAges), ncol = N_BANDS)
     for (b in seq_len(N_BANDS)) {
       sel <- which(bandIdx == b)
@@ -234,13 +299,15 @@ run_method <- function(method, fts, bandIdx, gridIdx, binvec, binAges, nens,
     cols <- lapply(seq_len(nens), one_member)
   }
   nb <- length(binAges)
+  check_members(cols, nb, method, cfg)
   cols <- lapply(cols, function(m)
     if (is.matrix(m) && all(dim(m) == c(nb, N_BANDS))) m else matrix(NA_real_, nb, N_BANDS))
 
   rs <- cfg$ref_start %||% 1800; re <- cfg$ref_end %||% 1900
-  globalEns <- apply_reference(vapply(cols, area_weight, numeric(nb)), binAges, rs, re)
+  mrb <- cfg$member_ref_bp                              # NULL => full-record centering (default)
+  globalEns <- apply_reference(vapply(cols, area_weight, numeric(nb)), binAges, rs, re, mrb)
   bandEns <- lapply(seq_len(N_BANDS), function(b)
-    apply_reference(vapply(cols, function(m) m[, b], numeric(nb)), binAges, rs, re))
+    apply_reference(vapply(cols, function(m) m[, b], numeric(nb)), binAges, rs, re, mrb))
   list(global = globalEns, bands = bandEns)
 }
 
@@ -346,15 +413,27 @@ main <- function() {
 
   recs <- jsonlite::fromJSON(ts_path, simplifyVector = TRUE,
                              simplifyDataFrame = FALSE, simplifyMatrix = FALSE)
-  # keep paper's seasonal subset: annual / summerOnly / winterOnly
+  # Optional: keep only the paper's seasonal subset (annual / summerOnly /
+  # winterOnly). Off unless presto_season_filter: true, because these
+  # seasonalityGeneral labels are only used consistently within Temp12k;
+  # pools from wider collections choose one record per site upstream.
   keep_season <- function(r) tolower(r$seasonalityGeneral) %in% c("annual", "summeronly", "winteronly")
-  recs <- Filter(keep_season, recs)
+  if (isTRUE(cfg$presto_season_filter)) recs <- Filter(keep_season, recs)
   cat(sprintf("[run_methods] %d records after seasonality filter\n", length(recs)))
 
   fts <- build_fts(recs)
   lat <- vapply(fts, function(x) x$lat, numeric(1))
   lon <- vapply(fts, function(x) x$lon, numeric(1))
   bandIdx <- band_index(lat)
+
+  # Auto-detect the real-ensemble path: if records carry a real age ensemble
+  # matrix (proxy_ts real-ensemble schema), draw real chronologies per member
+  # (ageVar="ageEnsemble") instead of BAM-simulating from a single median age.
+  has_age_ens <- any(vapply(fts, function(x) !is.null(x$ageEnsemble) &&
+                              NCOL(x$ageEnsemble) > 1, logical(1)))
+  age_var_eff <- cfg$advanced$age_var %||% (if (has_age_ens) "ageEnsemble" else "age")
+  cat(sprintf("[run_methods] age path: %s (%s real age ensembles)\n",
+              age_var_eff, if (has_age_ens) "records carry" else "no"))
 
   grid <- read.csv(file.path(refdir, "equal_area_grid_centers.csv"))
   gridIdx <- grid_cell_index(lat, lon, grid)
@@ -373,7 +452,13 @@ main <- function() {
     cps_duration = cfg$advanced$cps_duration,
     cps_scale_window = cfg$advanced$cps_scale_window,
     paico_reg_param = cfg$advanced$paico_reg_param,
+    age_var = age_var_eff,                          # "ageEnsemble" when real ensembles present
     ncores = ncores,
+    seed = as.integer(cfg$advanced$seed %||% 42),  # same default as gam_method.py
+    # per-member centering window in yr BP; NULL/absent = full-record mean
+    # (empirically best vs published bands; see apply_reference doc)
+    member_ref_bp = cfg$advanced$member_ref_bp,
+    max_failed_frac = cfg$advanced$max_failed_frac,
     ref_start = refp$start, ref_end = refp$end)
 
   # write <m>_global.csv (binAges + ens) and <m>_bands.csv (binAges, band, ens)

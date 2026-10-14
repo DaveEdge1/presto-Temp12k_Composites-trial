@@ -53,3 +53,4 @@ lipd_output/
 *.nc
 *.h5
 *.hdf5
+reproduction/diagnostics.html

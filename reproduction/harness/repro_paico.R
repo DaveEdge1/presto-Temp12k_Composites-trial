@@ -29,7 +29,7 @@ set.seed(SEED)
 
 # Source only the PaiCo definitions. run_methods.R has a main() at end that reads
 # /results/proxy_ts.json -- inline the few helpers we need to avoid triggering it.
-source("/app/scripts/paico.R")
+source(getarg("--paico-src", "/app/scripts/paico.R"))
 
 # 30-deg latitudinal bands; area weight = (sin lat_hi - sin lat_lo)/2
 N_BANDS <- 6
@@ -45,7 +45,8 @@ area_weight <- function(bandMat) {
   den <- rowSums(w, na.rm = TRUE)
   out <- num / den; out[den == 0] <- NA; out
 }
-apply_reference <- function(ens, binAges, ref_start_ce = 1800, ref_end_ce = 1900) {
+apply_reference <- function(ens, binAges, ref_start_ce = 1800, ref_end_ce = 1900,
+                            member_ref_bp = NULL) {   # member_ref_bp ignored: full-record default
   ens <- sweep(ens, 2, colMeans(ens, na.rm = TRUE), "-")
   ref_bp <- c(1950 - ref_end_ce, 1950 - ref_start_ce)
   refrows <- which(binAges >= ref_bp[1] & binAges <= ref_bp[2])
@@ -95,8 +96,13 @@ paico_targets <- load_neukom_targets(file.path(REFDIR, "neukom_targets"))
 n_targets_loaded <- sum(!vapply(paico_targets, is.null, logical(1)))
 cat(sprintf("[repro_paico] Neukom CPS targets loaded for %d/6 bands\n", n_targets_loaded))
 
+CALIB_LO <- as.numeric(getarg("--calib-lo", "0"))
+CALIB_HI <- as.numeric(getarg("--calib-hi", "1000"))   # published last-millennium window (paico.R default)
 cfg <- list(ncores = NCORES, paico_reg_param = 100,
-            ref_start = 1800, ref_end = 1900)
+            ref_start = 1800, ref_end = 1900,
+            seed = SEED,   # per-member RNG stream (matches run_methods.R); also
+                           # drives the paper's random per-band target draw
+            paico_calib_window = c(CALIB_LO, CALIB_HI))
 
 t0 <- Sys.time()
 res <- run_paico(fts, bandIdx, binvec, binAges, NENS,

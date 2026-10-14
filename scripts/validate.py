@@ -135,15 +135,21 @@ def compute_metrics(age, med, q05, q95, pub, pub_lo, pub_hi):
 def plot_method(method, age, med, q05, q95, pub, pub_lo, pub_hi, out_path):
     o_age = age
     o_pub_age = pub[0]
-    me = anchor(o_age, med); pu = anchor(o_pub_age, pub[1])
+    # Anchor each {median, band} triple by the MEDIAN's 100-BP offset (one offset
+    # per set), so the band keeps its width and the median stays inside it.
+    # Anchoring lo/hi by their OWN 100-BP value collapses the band at 100 BP and
+    # can push the median outside it.
+    _o = np.argsort(o_age); moff = float(np.interp(100.0, o_age[_o], med[_o]))
+    _p = np.argsort(o_pub_age); poff = float(np.interp(100.0, o_pub_age[_p], pub[1][_p]))
+    me = med - moff; pu = pub[1] - poff
     fig, ax = plt.subplots(figsize=(9, 4.5))
     kyr = o_age / 1000.0; pkyr = o_pub_age / 1000.0
     col = COLORS.get(method, "black")
     if q05 is not None and q95 is not None:
-        ax.fill_between(kyr, anchor(o_age, q05), anchor(o_age, q95),
+        ax.fill_between(kyr, q05 - moff, q95 - moff,
                         color=col, alpha=0.18, label="mine 5–95%")
     ax.plot(kyr, me, color=col, lw=2.2, label=f"{method.upper() if method != 'consensus' else 'Consensus'} (mine)")
-    ax.fill_between(pkyr, anchor(o_pub_age, pub_lo), anchor(o_pub_age, pub_hi),
+    ax.fill_between(pkyr, pub_lo - poff, pub_hi - poff,
                     color="0.4", alpha=0.15, label="published 5–95%")
     ax.plot(pkyr, pu, color="0.2", lw=1.4, ls=":", label="published median")
     ax.axhline(0, color="k", lw=0.4)

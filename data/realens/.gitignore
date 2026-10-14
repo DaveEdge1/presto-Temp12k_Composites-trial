@@ -1,0 +1,3 @@
+*.rds
+*.json
+!README.md

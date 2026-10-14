@@ -36,6 +36,14 @@ import os
 import sys
 from pathlib import Path
 
+# Pin BLAS/OpenMP to one thread per process BEFORE numpy initialises. fit_cell
+# runs in a multiprocessing pool, so parallelism comes from the pool, not from
+# BLAS; one thread per worker avoids oversubscription (8 workers x N BLAS
+# threads). Honours a value the caller already set.
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+           "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_v, "1")
+
 import numpy as np
 import pandas as pd
 import yaml
@@ -49,6 +57,15 @@ N_BANDS = len(BAND_WEIGHTS)
 # because the higher default inflates the cell variance for records hitting
 # the fallback (we confirmed this empirically against the published curve).
 SIGMA_DEFAULT = 1.7
+
+# 0-insertion anchor (gam_ensemble.py._predict_gam): each cell's GAM is pinned
+# through 0 at the -35 BP (1985) reference by appending synthetic (age=-35,
+# value=0) points, `frac` of the cell's pooled-cloud size (floor 50). This
+# stabilises the youngest bins and trims the recent-end bias. Set frac<=0 to
+# disable. Overridable via config advanced.gam_zinsert_frac; run_gam sets it.
+_ZINSERT_FRAC = 0.05
+_ZINSERT_BP = -35.0
+_ZINSERT_MIN = 50
 
 
 def band_of(lat):
@@ -158,8 +175,9 @@ def modern_lookup(grid, lat, lon):
 
 
 # ---------- record loader ------------------------------------------------
-def load_records(ts_path, sigma_table, modern_grid, rng_seed=42):
-    """Load proxy_ts.json, filter to annual|summerOnly|winterOnly + degC,
+def load_records(ts_path, sigma_table, modern_grid, rng_seed=42, season_filter=False):
+    """Load proxy_ts.json, filter to degC (and, with season_filter, to
+    annual|summerOnly|winterOnly; config presto_season_filter),
     compute per-record sigma + WorldClim modern + Gaussian-perturbed
     age ensemble (500 cols, age_unc = 50 + age*200/12000), decadally
     decimate >1470-sample records (paper notebook cell 19).
@@ -175,18 +193,28 @@ def load_records(ts_path, sigma_table, modern_grid, rng_seed=42):
     for r in recs:
         if str(r.get("units", "")).lower() != "degc":
             continue
-        if str(r.get("seasonalityGeneral", "")).lower() not in ("annual", "summeronly", "winteronly"):
+        if season_filter and str(r.get("seasonalityGeneral", "")).lower() not in ("annual", "summeronly", "winteronly"):
             continue
         age_med = np.asarray(r["age"], dtype=float)
-        # GAM-specific choice: use the single-vector measurement (r["values"])
-        # and let the per-cell pool-sampler add Gaussian sigma noise per draw
-        # (paper's GAM ensemble construction). The pre-baked value-ensemble in
-        # proxy_ts.json (N=10 AR1 realisations) is too few to give the per-cell
-        # GAM cloud the diversity it needs -- ten fixed realisations vs the
-        # published's 100-2500 columns from real LiPD ensembles. Per-draw fresh
-        # sigma noise reproduces the published behaviour with our 10-col input.
         base_val = np.asarray(r["values"], dtype=float)
-        val_mat = base_val.reshape(-1, 1)
+        # Value ensemble. When the record carries the real per-record value
+        # ensemble from the v1.0.0 LiPD files (`values_ensemble`, the
+        # temp12kEnsemble matrix emitted by emit_realens_json.R), use it
+        # directly: those columns are the true proxy-calibration realisations,
+        # so the per-cell pool draws them and NO synthetic sigma noise is added.
+        # This is the real-ensemble upgrade that lifted DCC/CPS/PaiCo, applied to
+        # GAM (maxD 0.259 -> 0.155, spread -> 0.999). Falls back to the
+        # single-vector measurement + per-proxy x season sigma noise when no real
+        # value ensemble is present (e.g. the lipdverse pickle path).
+        ve = r.get("values_ensemble")
+        real_values = False
+        if ve is not None:
+            ve = np.asarray(ve, dtype=float)
+            if ve.ndim == 2 and ve.shape[0] == age_med.size and ve.shape[1] > 1:
+                val_mat = ve
+                real_values = True
+        if not real_values:
+            val_mat = base_val.reshape(-1, 1)
         if r.get("lat") is None or r.get("lon") is None:
             continue
         lat = float(r["lat"]); lon = float(r["lon"])
@@ -197,7 +225,8 @@ def load_records(ts_path, sigma_table, modern_grid, rng_seed=42):
         if m.sum() < 3:
             continue
         age_med = age_med[m]; val_mat = val_mat[m]; base_val = base_val[m]
-        # Direction flip (negative-direction proxies)
+        # Direction flip (negative-direction proxies). The real-ensemble slim
+        # cache is pre-flipped (direction="positive"), so this is a no-op there.
         if str(r.get("direction", "")).lower() == "negative":
             val_mat = val_mat * -1.0
             base_val = base_val * -1.0
@@ -210,14 +239,17 @@ def load_records(ts_path, sigma_table, modern_grid, rng_seed=42):
                                      for k in uniq])
             age_med, val_mat = new_age, new_val_mat
             base_val = np.nanmean(val_mat, axis=1)
-        # Paper cell 24+38: Gaussian-perturbed age ensemble, 500 columns
+        # Paper cell 24+38: Gaussian-perturbed age ensemble, 500 columns. This
+        # is the paper's OWN age-uncertainty model; feeding the raw chronology
+        # ensembles instead over-smears the deglacial (12ka runs ~0.3 degC warm),
+        # so GAM keeps this model even when real age ensembles are available.
         age_unc = 50.0 + np.maximum(age_med, 0.0) * (250.0 - 50.0) / 12000.0
         age_ens = rng.normal(loc=age_med[:, None], scale=age_unc[:, None],
                              size=(age_med.size, 500)).astype(np.float32)
-        # Per-proxy × season sigma -- applied every pool draw (matches paper's
-        # GAM behaviour and the published gam_ensemble.py default that gives
-        # local maxD ~0.22 / midHol 0.465 / spread 0.996).
-        sigma = get_sigma(sigma_table, r.get("proxy"), r.get("seasonalityGeneral"))
+        # Real value ensemble already carries the calibration spread; otherwise
+        # add per-proxy x season sigma noise on every pool draw.
+        sigma = 0.0 if real_values else get_sigma(
+            sigma_table, r.get("proxy"), r.get("seasonalityGeneral"))
         # WorldClim modern lookup (fallback for records lacking 3-5 ka coverage)
         modern = modern_lookup(modern_grid, lat, lon)
         out.append({"age_med": age_med, "val": base_val, "val_mat": val_mat,
@@ -361,7 +393,11 @@ def fit_cell(args):
     pygam call but constrains `lam` to remove the wiggly low-lam tail of the
     pygam 0.12 gridsearch."""
     from pygam import LinearGAM, s
-    cid, x, y, pre_anom, band, n_draws, bin_ages, binvec = args
+    cid, x, y, pre_anom, band, n_draws, bin_ages, binvec, seed = args
+    # pygam's gam.sample() draws via numpy's GLOBAL RNG (not a Generator), and
+    # fit_cell runs in forked pool workers, so without this the posterior draws
+    # differ every run. Seed the legacy global RNG deterministically per cell.
+    np.random.seed((int(seed) + int(cid) * 100003) % (2**32))
     if x.size < 20 or np.ptp(x) < 200:
         return cid, None, None, band
     ref_mask = (x >= 3000) & (x <= 5000)
@@ -371,10 +407,17 @@ def fit_cell(args):
     if anchor_mask.sum() < 100:
         anchor_mask = ref_mask
     y0 = y - float(np.nanmean(y[anchor_mask]))
+    # 0-insertion at -35 BP: pin the cell's fit through 0 near present.
+    if _ZINSERT_FRAC > 0:
+        n_z = max(_ZINSERT_MIN, int(round(_ZINSERT_FRAC * x.size)))
+        x_fit = np.concatenate([x, np.full(n_z, _ZINSERT_BP)])
+        y_fit = np.concatenate([y0, np.zeros(n_z)])
+    else:
+        x_fit, y_fit = x, y0
     try:
         lam_grid = np.logspace(-1, 3, 11)
-        gam = LinearGAM(s(0)).gridsearch(x[:, None], y0, lam=lam_grid, progress=False)
-        draws = gam.sample(x[:, None], y0, sample_at_X=bin_ages[:, None],
+        gam = LinearGAM(s(0)).gridsearch(x_fit[:, None], y_fit, lam=lam_grid, progress=False)
+        draws = gam.sample(x_fit[:, None], y_fit, sample_at_X=bin_ages[:, None],
                            n_draws=n_draws, n_bootstraps=1, quantity="mu")
         resid = y0 - gam.predict(x[:, None])
         scale = float(np.nanstd(resid))
@@ -433,6 +476,8 @@ def run_gam(ts_path, cfg, grid, sigma_table_path, modern_grid_path, out_csv):
     nens = int(cfg.get("nens", 100))
     n_pool = int((cfg.get("advanced") or {}).get("gam_n_pool", 500))
     noise_gain = float((cfg.get("advanced") or {}).get("gam_noise_gain", 1.0))
+    global _ZINSERT_FRAC
+    _ZINSERT_FRAC = float((cfg.get("advanced") or {}).get("gam_zinsert_frac", _ZINSERT_FRAC))
     ZW = np.sin(LATBINS[1:] * np.pi / 180) - np.sin(LATBINS[:-1] * np.pi / 180)
     ZW = ZW / ZW.sum()
     seed = int(cfg.get("advanced", {}).get("seed") or 42)
@@ -442,7 +487,8 @@ def run_gam(ts_path, cfg, grid, sigma_table_path, modern_grid_path, out_csv):
     print(f"[gam] sigma_table: {len(sigma_table)} entries; "
           f"modern_grid: {'loaded' if modern_grid is not None else 'NONE'}", file=sys.stderr)
 
-    recs = load_records(ts_path, sigma_table, modern_grid, rng_seed=seed)
+    recs = load_records(ts_path, sigma_table, modern_grid, rng_seed=seed,
+                        season_filter=cfg.get("presto_season_filter") is True)
     print(f"[gam] {len(recs)} records after filter", file=sys.stderr)
     if len(recs) < 10:
         raise SystemExit("[gam] too few records")
@@ -478,18 +524,26 @@ def run_gam(ts_path, cfg, grid, sigma_table_path, modern_grid_path, out_csv):
         ok = np.isfinite(x) & np.isfinite(y) & (x >= -50) & (x <= 12050)
         if ok.sum() < 20:
             continue
-        groups.append((cid, x[ok], y[ok], p[ok], cell_band[cid], nens, bin_ages, binvec))
+        groups.append((cid, x[ok], y[ok], p[ok], cell_band[cid], nens, bin_ages, binvec, seed))
     print(f"[gam] fitting {len(groups)} cells on {cfg.get('ncores') or 'auto'} cores ...",
           file=sys.stderr, flush=True)
 
     ncores = int(cfg.get("ncores") or max(1, (os.cpu_count() or 2) - 1))
     ncores = max(1, min(ncores, len(groups)))
     import multiprocessing as mp, time
+    # Pool start method, overridable via advanced.gam_mp_context / env. "fork"
+    # is fastest and correct on native Linux (CI). NOTE: under x86 emulation
+    # (Rosetta/qemu on Apple Silicon) the pool can deadlock in a futex at the
+    # tail with BOTH fork and spawn; the reliable workaround there is ncores=1
+    # (the sequential branch below, no pool). Results are identical across start
+    # methods (per-cell state arrives via picklable args + per-cell seeding).
+    mp_context = (os.environ.get("GAM_MP_CONTEXT")
+                  or (cfg.get("advanced") or {}).get("gam_mp_context", "fork"))
     cell_draws_mu = {}
     cell_scale = {}
     n_done = 0; n_skipped = 0; t0 = time.time()
     if ncores > 1:
-        ctx = mp.get_context("fork")
+        ctx = mp.get_context(mp_context)
         with ctx.Pool(ncores) as pool:
             for cid, dr, sc, bn in pool.imap_unordered(fit_cell, groups, chunksize=1):
                 cell_band[cid] = bn

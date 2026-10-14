@@ -285,18 +285,37 @@ jobs:
           name: recon-data-for-viz-${{ github.run_number }}
           path: ./recon-data
 
+      - name: Fetch latest real-ensemble diagnostics
+        # The real-ensemble validation report (consensus + per-method overlays
+        # vs published) is produced by validate-realens.yml's combine job and
+        # uploaded as realens-diagnostics-<run_id>. Pull the most recent one so
+        # the landing page below can surface it next to the pickle-path report.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          art_id=$(gh api "repos/${{ github.repository }}/actions/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.name|startswith("realens-diagnostics-")) | select(.expired==false)] | sort_by(.created_at) | last | .id')
+          if [ -n "$art_id" ] && [ "$art_id" != "null" ]; then
+            echo "real-ensemble diagnostics artifact id=$art_id"
+            gh api "repos/${{ github.repository }}/actions/artifacts/${art_id}/zip" > /tmp/realens.zip
+            mkdir -p ./visualization-output/realens
+            unzip -o /tmp/realens.zip -d ./visualization-output/realens >/dev/null \
+              && echo "fetched real-ensemble diagnostics"
+          else
+            echo "no realens-diagnostics artifact found (real-ensemble tile omitted)"
+          fi
+
       - name: Prepare Pages content
         run: |
-          # presto-viz delivers a `viz/` subdir; rename to `docs/` to
-          # match the link path used in its visualizer.html. Static viz
-          # has the same structure as the deploy expects out of the box.
+          # presto-viz delivers a `viz/` subdir; rename to `docs/` to match the
+          # link path used in its visualizer.html.
           if [ -d "./visualization-output/viz" ]; then
             mv ./visualization-output/viz ./visualization-output/docs
           fi
           find ./visualization-output -type f -name "*.zip" -delete
 
-          # Surface the validation report (validation/index.html + figures)
-          # alongside the visualizer so the landing page can link to it.
+          # Pickle-path validation report (from the reconstruction artifact).
           if [ -d ./recon-data/validation ]; then
             mkdir -p ./visualization-output/validation
             cp -r ./recon-data/validation/. ./visualization-output/validation/
@@ -306,21 +325,30 @@ jobs:
           mkdir -p ./visualization-output/images
           cp images/visualization.png images/validation.png ./visualization-output/images/ 2>/dev/null || true
 
-          # Spatial (presto-viz) path has no index.html yet. Build a
-          # tile-style landing page — a Reconstruction Validation tile
-          # (when the report exists) plus a Visualize Results tile —
-          # modeled on holocene_da, instead of bouncing straight to the
-          # raw visualizer.html. The static path keeps its own index.html.
-          if [ ! -f ./visualization-output/index.html ]; then
-            VALIDATION_TILE=""
-            if [ -f ./visualization-output/validation/index.html ]; then
-              VALIDATION_TILE='<a class="tile" href="validation/index.html"><img src="images/validation.png" alt="Reconstruction Validation"><span>Reconstruction Validation</span></a>'
-            fi
-            VIZ_TILE=""
-            if [ -f ./visualization-output/docs/visualizer.html ]; then
-              VIZ_TILE='<a class="tile" href="docs/visualizer.html"><img src="images/visualization.png" alt="Visualize Results"><span>Visualize Results</span></a>'
-            fi
-            cat > ./visualization-output/index.html << HTMLEOF
+          # Unified landing page — one tile per diagnostic that actually exists:
+          # pickle-path validation, real-ensemble validation, the spatial
+          # visualizer, the static figure, and the data download. Rebuilt
+          # unconditionally so BOTH the spatial and static paths get the
+          # real-ensemble tile.
+          tiles=""
+          if [ -f ./visualization-output/validation/index.html ]; then
+            tiles="${tiles}<a class=\"tile\" href=\"validation/index.html\"><img src=\"images/validation.png\" alt=\"\" onerror=\"this.style.display='none'\"><span>Reconstruction Validation<small>pickle / production path</small></span></a>"
+          fi
+          if [ -f ./visualization-output/realens/validation/index.html ]; then
+            tiles="${tiles}<a class=\"tile\" href=\"realens/validation/index.html\"><img src=\"images/validation.png\" alt=\"\" onerror=\"this.style.display='none'\"><span>Reconstruction Validation<small>real ensembles (v1.0.0)</small></span></a>"
+          fi
+          if [ -f ./visualization-output/docs/visualizer.html ]; then
+            tiles="${tiles}<a class=\"tile\" href=\"docs/visualizer.html\"><img src=\"images/visualization.png\" alt=\"\" onerror=\"this.style.display='none'\"><span>Visualize Results<small>spatial</small></span></a>"
+          fi
+          if ls ./visualization-output/figures/*.png >/dev/null 2>&1; then
+            fig=$(ls ./visualization-output/figures/*.png | head -n1 | xargs basename)
+            tiles="${tiles}<a class=\"tile\" href=\"figures/${fig}\"><img src=\"figures/${fig}\" alt=\"\"><span>Reconstruction Figure</span></a>"
+          fi
+          if [ -d ./visualization-output/data ]; then
+            tiles="${tiles}<a class=\"tile\" href=\"data/\"><img src=\"images/visualization.png\" alt=\"\" onerror=\"this.style.display='none'\"><span>Download data</span></a>"
+          fi
+
+          cat > ./visualization-output/index.html << HTMLEOF
           <!DOCTYPE html>
           <html lang="en">
           <head>
@@ -335,40 +363,38 @@ jobs:
               body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
                      background:var(--bg); color:var(--fg); margin:0; min-height:100vh;
                      display:flex; flex-direction:column; }
-              header { text-align:center; padding:48px 24px 24px; }
+              header { text-align:center; padding:48px 24px 12px; }
               header h1 { margin:0; font-size:2rem; font-weight:600; }
+              header p { color:#555; }
               main { flex:1; display:flex; justify-content:center; align-items:center; padding:24px; }
-              .tiles { display:flex; flex-wrap:wrap; gap:32px; justify-content:center; }
+              .tiles { display:flex; flex-wrap:wrap; gap:32px; justify-content:center; max-width:1100px; }
               .tile { display:flex; flex-direction:column; align-items:center; justify-content:flex-start;
-                      width:clamp(240px,32vw,480px); padding:clamp(20px,2.5vw,40px);
+                      width:clamp(240px,30vw,380px); padding:clamp(20px,2.5vw,36px);
                       background:var(--tile-bg); border-radius:12px; box-shadow:var(--tile-shadow);
                       text-decoration:none; color:var(--fg);
                       transition:transform .15s ease, box-shadow .15s ease; }
               .tile:hover { transform:translateY(-3px); box-shadow:var(--tile-shadow-hover); }
-              .tile img { width:100%; height:clamp(160px,22vw,360px); object-fit:contain; margin-bottom:20px; }
-              .tile span { font-size:clamp(1.1rem,1.6vw,1.5rem); font-weight:500; color:var(--accent); text-align:center; }
+              .tile img { width:100%; height:clamp(140px,18vw,260px); object-fit:contain; margin-bottom:16px; }
+              .tile span { font-size:clamp(1.05rem,1.5vw,1.35rem); font-weight:600; color:var(--accent); text-align:center; }
+              .tile span small { display:block; font-size:.72em; color:#666; font-weight:400; margin-top:4px; }
               footer { text-align:center; padding:32px 24px 40px; color:#666; }
             </style>
           </head>
           <body>
             <header>
               <h1>Temperature 12k Composites — PReSto</h1>
-              <p>Generated from <a href="https://github.com/${{ github.repository }}">${{ github.repository }}</a></p>
+              <p>Diagnostics for <a href="https://github.com/${{ github.repository }}">${{ github.repository }}</a>. Each validation tile overlays the reconstructed GMST (median + 5–95% band) against the published Kaufman et&nbsp;al. (2020) curves, per method and for the consensus.</p>
             </header>
             <main>
-              <div class="tiles">
-                ${VALIDATION_TILE}
-                ${VIZ_TILE}
-              </div>
+              <div class="tiles">${tiles}</div>
             </main>
             <footer><small>Generated by <a href="https://paleopresto.com">PReSto</a></small></footer>
           </body>
           </html>
           HTMLEOF
-          fi
 
           echo "Pages content:"
-          ls -lhR ./visualization-output/
+          ls -lhR ./visualization-output/ | head -80
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

@@ -29,7 +29,15 @@ RUN python3 -m venv /opt/venv && \
 
 ENV PYTHON_BIN=/opt/venv/bin/python
 
-# ── Layer 3: app source (cheap; iterates often) ───────────────────────────
+# ── Layer 3: real-ensemble bundle (large-ish; changes only with data version) ──
+# v1.0.0 real per-record age+value ensembles (column-subsampled) that the
+# published methods used, so the container reproduces Kaufman 2020 rather than
+# the pickle's synthetic single-vector ensembles. Built by
+# reproduction/localrepro/build_realens_bundle.sh (a build input, not committed
+# large; see that script). Only used when PRESTO_REALENS=1.
+COPY data/realens/   /app/data/realens/
+
+# ── Layer 4: app source (cheap; iterates often) ───────────────────────────
 WORKDIR /app
 COPY scripts/        /app/scripts/
 COPY config/         /app/config/

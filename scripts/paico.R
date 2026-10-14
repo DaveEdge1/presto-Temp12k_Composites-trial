@@ -115,7 +115,7 @@
 # Using annual target values inflates `si` by the decadal/sub-decadal variance
 # the target carries -> mul = si/sp blown up -> amplitude inflated.
 .paico_calibrate <- function(signal, binAges, target_ages, target_vals,
-                             overlap = c(0, 2000)) {
+                             overlap = c(0, 1000)) {   # last millennium, per published pipeline
   ov_sig <- which(binAges >= overlap[1] & binAges <= overlap[2])
   if (length(ov_sig) < 3) return(signal)
   part <- signal[ov_sig]
@@ -146,6 +146,9 @@ run_paico <- function(fts, bandIdx, binvec, binAges, nens,
   pbinAges <- rowMeans(cbind(pbinvec[-1], pbinvec[-length(pbinvec)]))
 
   one_member <- function(i) {
+    # per-member RNG stream (offset 4e6 keeps it distinct from dcc/scc/cps
+    # streams in run_methods.R); deterministic across core counts/scheduling
+    if (!is.null(cfg$seed)) set.seed(cfg$seed + 4000000L + i)
     bandMat <- matrix(NA_real_, nrow = length(binAges), ncol = N_BANDS)
     for (b in seq_len(N_BANDS)) {
       sel <- which(bandIdx == b)                       # PaiCo uses all records
@@ -172,15 +175,28 @@ run_paico <- function(fts, bandIdx, binvec, binAges, nens,
         tgt <- cps_targets[[b]]
         # Paper: "each 12k zonal composite was paired with, and scaled to, a
         # different 2k zonal target randomly selected from the multi-method
-        # ensemble". MATLAB committed code uses fixed targetMedian.CPS, but the
-        # paper's behaviour requires per-member calibration variability. With
-        # only Neukom CPS available, draw a random column per PaiCo member to
-        # inject the calibration-uncertainty spread that the paper describes.
+        # ensemble". So the target is drawn (a) RANDOMLY and (b) INDEPENDENTLY
+        # per zonal band, which decorrelates the six bands' calibrations and
+        # supplies the calibration-uncertainty spread the paper describes. The
+        # draw runs on the per-member RNG stream seeded above (cfg$seed+4e6+i),
+        # so it stays byte-reproducible across core counts/scheduling. Without a
+        # seed, fall back to a deterministic per-member rotation. (The paper's
+        # exact multi-method 2k target is unarchived; we draw from the bundled
+        # Neukom ensemble, the closest available.)
         ncols <- NCOL(tgt$mat)
-        k <- ((i - 1L) %% ncols) + 1L   # deterministic rotation -> reproducible spread
+        k <- if (!is.null(cfg$seed)) sample.int(ncols, 1L) else ((i - 1L) %% ncols) + 1L
         tcol <- tgt$mat[, k]
-        # 1000-yr calibration window per the paper.
-        sig <- .paico_calibrate(sig, pbinAges, tgt$ages, tcol, overlap = c(0, 1000))
+        # Scaling window (yr BP). The published PaiCo rescaling
+        # (Christoph/Neukom plotPaicoEnsemble.R) calls scaleComposite with
+        # scaleWindow = 1950 - c(1000,2000), i.e. the LAST MILLENNIUM
+        # (1000-2000 CE = 0-1000 BP), NOT the full 0-2000 overlap. Matching
+        # variance over 0-2000 standardises the (Arctic-heavy) signal by a
+        # larger window variance, under-scaling the full-Holocene amplitude and
+        # flattening the HTM (too-cold). The 0-1000 window reproduces the
+        # published amplitude (bias ~0, midHol on target). Configurable via
+        # cfg$paico_calib_window; default 0-1000 to match the publication.
+        cw <- cfg$paico_calib_window %||% c(0, 1000)
+        sig <- .paico_calibrate(sig, pbinAges, tgt$ages, tcol, overlap = cw)
       }
       # AFTER calibrate, mask bins where no proxy had data
       present <- which(rowSums(is.finite(binMat)) > 0)
@@ -200,11 +216,13 @@ run_paico <- function(fts, bandIdx, binvec, binAges, nens,
     cols <- lapply(seq_len(nens), one_member)
   }
   nb <- length(binAges)
+  if (exists("check_members")) check_members(cols, nb, "paico", cfg)
   cols <- lapply(cols, function(m)
     if (is.matrix(m) && all(dim(m) == c(nb, N_BANDS))) m else matrix(NA_real_, nb, N_BANDS))
   rs <- cfg$ref_start %||% 1800; re <- cfg$ref_end %||% 1900
-  globalEns <- apply_reference(vapply(cols, area_weight, numeric(nb)), binAges, rs, re)
+  mrb <- cfg$member_ref_bp                              # NULL => full-record centering (default)
+  globalEns <- apply_reference(vapply(cols, area_weight, numeric(nb)), binAges, rs, re, mrb)
   bandEns <- lapply(seq_len(N_BANDS), function(b)
-    apply_reference(vapply(cols, function(m) m[, b], numeric(nb)), binAges, rs, re))
+    apply_reference(vapply(cols, function(m) m[, b], numeric(nb)), binAges, rs, re, mrb))
   list(global = globalEns, bands = bandEns)
 }
